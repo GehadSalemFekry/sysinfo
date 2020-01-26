@@ -149,6 +149,13 @@ pub struct Process {
     ///
     /// This is very likely this one that you want instead of `process_status`.
     pub status: Option<ThreadStatus>,
+    pub faults: u64,
+    pub pageins: u64,
+    pub messages_sent: u64,
+    pub messages_received: u64,
+    pub threads_total: u64,
+    pub threads_running: u64,
+    pub priority: i32,
 }
 
 impl Process {
@@ -179,6 +186,15 @@ impl Process {
             gid: 0,
             process_status: ProcessStatus::Unknown(0),
             status: None,
+            faults: 0,
+            pageins: 0,
+            messages_sent: 0,
+            messages_received: 0,
+            threads_total: 0,
+            threads_running: 0,
+            priority: 0,
+            read_bytes: 0,
+            write_bytes: 0
         }
     }
 
@@ -422,6 +438,7 @@ pub(crate) fn update_process(
 
             p.memory = task_info.pti_resident_size >> 10; // divide by 1024
             p.virtual_memory = task_info.pti_virtual_size >> 10; // divide by 1024
+            
             return Ok(None);
         }
 
@@ -602,6 +619,15 @@ pub(crate) fn update_process(
 
         p.memory = task_info.pti_resident_size >> 10; // divide by 1024
         p.virtual_memory = task_info.pti_virtual_size >> 10; // divide by 1024
+        // https://fergofrog.com/code/cbowser/xnu/osfmk/kern/bsd_kern.c.html
+        p.faults = task_info.ptinfo.pti_faults as u64;
+        p.pageins = task_info.ptinfo.pti_pageins as u64;
+        p.messages_sent = task_info.ptinfo.pti_messages_sent as u64;
+        p.messages_received = task_info.ptinfo.pti_messages_received as u64;
+        p.messages_sent = task_info.ptinfo.pti_messages_sent as u64;
+        p.threads_running = task_info.ptinfo.pti_numrunning as u64;
+        p.threads_total = task_info.ptinfo.pti_threadnum as u64;
+        p.priority = task_info.ptinfo.pti_priority;
 
         p.uid = info.pbi_uid;
         p.gid = info.pbi_gid;

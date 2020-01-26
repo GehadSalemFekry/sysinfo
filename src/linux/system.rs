@@ -636,7 +636,8 @@ fn _get_process_data(
 
     p.stat_file = stat_file;
     get_status(&mut p, parts[2]);
-
+    p.priority = parts[18].parse::<i32>().unwrap_or(0);
+    p.threads_total = parts[19].parse::<u64>().unwrap_or(0);
     tmp.pop();
     tmp.push("status");
     if let Ok(data) = get_all_data(&tmp, 16_385) {

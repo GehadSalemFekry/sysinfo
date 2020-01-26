@@ -124,6 +124,13 @@ pub struct Process {
     /// Tasks run by this process.
     pub tasks: HashMap<Pid, Process>,
     pub(crate) stat_file: Option<File>,
+    pub faults: u64,
+    pub pageins: u64,
+    pub messages_sent: u64,
+    pub messages_received: u64,
+    pub threads_total: u64,
+    pub threads_running: u64,
+    pub priority: i32
 }
 
 impl ProcessExt for Process {
@@ -155,6 +162,13 @@ impl ProcessExt for Process {
                 HashMap::new()
             },
             stat_file: None,
+            faults: 0,
+            pageins: 0,
+            messages_sent: 0,
+            messages_received: 0,
+            threads_total: 0,
+            threads_running: 0,
+            priority: 0
         }
     }
 
