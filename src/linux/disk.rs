@@ -85,6 +85,7 @@ pub fn new(name: &OsStr, mount_point: &Path, file_system: &[u8]) -> Disk {
 }
 
 /// Struct containing a disk information.
+#[derive(Clone)]
 pub struct Disk {
     type_: DiskType,
     name: OsString,

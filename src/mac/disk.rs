@@ -41,6 +41,7 @@ impl From<isize> for DiskType {
 }
 
 /// Struct containing a disk information.
+#[derive(Clone)]
 pub struct Disk {
     type_: DiskType,
     name: OsString,
