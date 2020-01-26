@@ -3,7 +3,7 @@
 //
 // Copyright (c) 2019 Guillaume Gomez
 //
-
+use std::fs;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Read};
 
@@ -48,28 +48,19 @@ fn read_things() -> Result<(u64, u64), Error> {
             .map_err(|_| Error::new(ErrorKind::Other, "Failed to parse network stat"))
     }
 
-    let default_interface = {
-        let mut file = File::open("/proc/net/route")?;
-        let mut content = String::with_capacity(800);
-        file.read_to_string(&mut content)?;
-        content
-            .lines()
-            .filter(|l| {
-                l.split_whitespace()
-                    .nth(2)
-                    .map(|l| l != "00000000")
-                    .unwrap_or(false)
-            })
-            .last()
-            .and_then(|l| l.split_whitespace().nth(0))
-            .ok_or_else(|| Error::new(ErrorKind::Other, "Default device not found"))?
-            .to_owned()
-    };
-
-    Ok((
-        read_interface_stat(&default_interface, "rx")?,
-        read_interface_stat(&default_interface, "tx")?,
-    ))
+    let mut rx: u64 = 0;
+    let mut tx: u64 = 0;
+    if let Ok(entries) = fs::read_dir("/sys/class/net"){
+        for entry in entries{
+            if let Ok(entry) = entry{
+                let iface = entry.file_name().into_string().unwrap();
+                rx += read_interface_stat(iface.as_str(), "rx").unwrap();
+                tx += read_interface_stat(iface.as_str(), "tx").unwrap();
+            }
+        }
+    }
+    
+    Ok((rx, tx))
 }
 
 pub fn update_network(n: &mut NetworkData) {
