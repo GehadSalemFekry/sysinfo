@@ -83,7 +83,7 @@ pub fn update_network(n: &mut NetworkData) {
         n.current_in
     };
     n.current_in = totalibytes;
-    n.old_out = if n.current_out > totalibytes {
+    n.old_out = if n.current_out > totalobytes {
         0
     } else {
         n.current_out
