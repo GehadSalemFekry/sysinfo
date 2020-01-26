@@ -130,7 +130,9 @@ pub struct Process {
     pub messages_received: u64,
     pub threads_total: u64,
     pub threads_running: u64,
-    pub priority: i32
+    pub priority: i32,
+    pub read_bytes: u64,
+    pub write_bytes: u64
 }
 
 impl ProcessExt for Process {
@@ -168,7 +170,9 @@ impl ProcessExt for Process {
             messages_received: 0,
             threads_total: 0,
             threads_running: 0,
-            priority: 0
+            priority: 0,
+            read_bytes: 0,
+            write_bytes: 0
         }
     }
 

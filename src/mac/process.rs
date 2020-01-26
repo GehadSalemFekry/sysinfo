@@ -156,6 +156,8 @@ pub struct Process {
     pub threads_total: u64,
     pub threads_running: u64,
     pub priority: i32,
+    pub read_bytes: u64,
+    pub write_bytes: u64
 }
 
 impl Process {
@@ -192,7 +194,9 @@ impl Process {
             messages_received: 0,
             threads_total: 0,
             threads_running: 0,
-            priority: 0
+            priority: 0,
+            read_bytes: 0,
+            write_bytes: 0
         }
     }
 
@@ -234,7 +238,9 @@ impl Process {
             messages_received: 0,
             threads_total: 0,
             threads_running: 0,
-            priority: 0
+            priority: 0,
+            read_bytes: 0,
+            write_bytes: 0
         }
     }
 }
@@ -269,7 +275,9 @@ impl ProcessExt for Process {
             messages_received: 0,
             threads_total: 0,
             threads_running: 0,
-            priority: 0
+            priority: 0,
+            read_bytes: 0,
+            write_bytes: 0
         }
     }
 
@@ -464,7 +472,7 @@ pub(crate) fn update_process(
 
             p.memory = task_info.pti_resident_size >> 10; // divide by 1024
             p.virtual_memory = task_info.pti_virtual_size >> 10; // divide by 1024
-            
+            update_proc_disk_activity(p);
             return Ok(None);
         }
 
@@ -660,8 +668,25 @@ pub(crate) fn update_process(
         p.uid = info.pbi_uid;
         p.gid = info.pbi_gid;
         p.process_status = ProcessStatus::from(info.pbi_status);
-
+        update_proc_disk_activity(&mut p);
         Ok(Some(p))
+    }
+}
+
+fn update_proc_disk_activity(p: &mut Process){
+    let mut pidrusage = ffi::RUsageInfoV2::default();
+    let ptr = &mut pidrusage as *mut _ as *mut c_void;
+    let retval: i32;
+    unsafe{
+        retval = ffi::proc_pid_rusage(p.pid() as c_int, 2, ptr);
+    }
+
+    if retval < 0{
+        panic!("proc_pid_rusage failed: {:?}", retval);
+    }
+    else{
+        p.read_bytes = pidrusage.ri_diskio_bytesread;
+        p.write_bytes = pidrusage.ri_diskio_byteswritten;
     }
 }
 
