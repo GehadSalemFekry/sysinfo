@@ -192,9 +192,7 @@ impl Process {
             messages_received: 0,
             threads_total: 0,
             threads_running: 0,
-            priority: 0,
-            read_bytes: 0,
-            write_bytes: 0
+            priority: 0
         }
     }
 
@@ -230,6 +228,13 @@ impl Process {
             gid: 0,
             process_status: ProcessStatus::Unknown(0),
             status: None,
+            faults: 0,
+            pageins: 0,
+            messages_sent: 0,
+            messages_received: 0,
+            threads_total: 0,
+            threads_running: 0,
+            priority: 0
         }
     }
 }
@@ -258,6 +263,13 @@ impl ProcessExt for Process {
             gid: 0,
             process_status: ProcessStatus::Unknown(0),
             status: None,
+            faults: 0,
+            pageins: 0,
+            messages_sent: 0,
+            messages_received: 0,
+            threads_total: 0,
+            threads_running: 0,
+            priority: 0
         }
     }
 
@@ -393,6 +405,20 @@ unsafe fn get_task_info(pid: Pid) -> libc::proc_taskinfo {
         0,
         &mut task_info as *mut libc::proc_taskinfo as *mut c_void,
         mem::size_of::<libc::proc_taskinfo>() as _,
+    );
+    task_info
+}
+
+unsafe fn get_task_all_info(pid: Pid) -> libc::proc_taskallinfo {
+    let mut task_info = mem::zeroed::<libc::proc_taskallinfo>();
+    // If it doesn't work, we just don't have memory information for this process
+    // so it's "fine".
+    ffi::proc_pidinfo(
+        pid,
+        libc::PROC_PIDTASKALLINFO,
+        0,
+        &mut task_info as *mut libc::proc_taskallinfo as *mut c_void,
+        mem::size_of::<libc::proc_taskallinfo>() as _,
     );
     task_info
 }
@@ -619,15 +645,17 @@ pub(crate) fn update_process(
 
         p.memory = task_info.pti_resident_size >> 10; // divide by 1024
         p.virtual_memory = task_info.pti_virtual_size >> 10; // divide by 1024
+
+        let all_task_info = get_task_all_info(pid);
         // https://fergofrog.com/code/cbowser/xnu/osfmk/kern/bsd_kern.c.html
-        p.faults = task_info.ptinfo.pti_faults as u64;
-        p.pageins = task_info.ptinfo.pti_pageins as u64;
-        p.messages_sent = task_info.ptinfo.pti_messages_sent as u64;
-        p.messages_received = task_info.ptinfo.pti_messages_received as u64;
-        p.messages_sent = task_info.ptinfo.pti_messages_sent as u64;
-        p.threads_running = task_info.ptinfo.pti_numrunning as u64;
-        p.threads_total = task_info.ptinfo.pti_threadnum as u64;
-        p.priority = task_info.ptinfo.pti_priority;
+        p.faults = all_task_info.ptinfo.pti_faults as u64;
+        p.pageins = all_task_info.ptinfo.pti_pageins as u64;
+        p.messages_sent = all_task_info.ptinfo.pti_messages_sent as u64;
+        p.messages_received = all_task_info.ptinfo.pti_messages_received as u64;
+        p.messages_sent = all_task_info.ptinfo.pti_messages_sent as u64;
+        p.threads_running = all_task_info.ptinfo.pti_numrunning as u64;
+        p.threads_total = all_task_info.ptinfo.pti_threadnum as u64;
+        p.priority = all_task_info.ptinfo.pti_priority;
 
         p.uid = info.pbi_uid;
         p.gid = info.pbi_gid;
