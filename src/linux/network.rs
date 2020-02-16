@@ -53,9 +53,11 @@ fn read_things() -> Result<(u64, u64), Error> {
     if let Ok(entries) = fs::read_dir("/sys/class/net"){
         for entry in entries{
             if let Ok(entry) = entry{
-                let iface = entry.file_name().into_string().unwrap();
-                rx += read_interface_stat(iface.as_str(), "rx").unwrap();
-                tx += read_interface_stat(iface.as_str(), "tx").unwrap();
+                if let Ok(iface) = entry.file_name().into_string(){
+                    rx += read_interface_stat(iface.as_str(), "rx").unwrap_or(0);
+                    tx += read_interface_stat(iface.as_str(), "tx").unwrap_or(0);
+                }
+               
             }
         }
     }
