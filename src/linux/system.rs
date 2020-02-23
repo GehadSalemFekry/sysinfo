@@ -661,11 +661,7 @@ fn _get_process_data(
         tmp.pop();
         tmp.push("cmdline");
         p.cmd = copy_from_file(&tmp);
-        p.name = p
-            .cmd
-            .get(0)
-            .map(|x| x.split('/').last().unwrap_or_else(|| "").to_owned())
-            .unwrap_or_default();
+        p.name = parts[1].to_string().replace("(", "");
         tmp.pop();
         tmp.push("environ");
         p.environ = copy_from_file(&tmp);
