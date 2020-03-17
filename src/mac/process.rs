@@ -373,8 +373,18 @@ impl Debug for Process {
 }
 
 pub(crate) fn compute_cpu_usage(p: &mut Process, time: u64, task_time: u64) {
-    let system_time_delta = task_time - p.old_utime;
-    let time_delta = time - p.old_stime;
+    let system_time_delta = if task_time > p.old_utime{
+        task_time - p.old_utime
+    }
+    else{
+        0
+    };
+    let time_delta = if time > p.old_stime {
+        time - p.old_stime
+    }
+    else{
+        0
+    };
     p.old_utime = task_time;
     p.old_stime = time;
     p.cpu_usage = if time_delta == 0 {
