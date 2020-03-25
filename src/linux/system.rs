@@ -761,30 +761,14 @@ pub fn get_all_data<P: AsRef<Path>>(file_path: P, size: usize) -> io::Result<Str
 
 fn get_all_disks() -> Vec<Disk> {
     let content = get_all_data("/proc/mounts", 16_385).unwrap_or_default();
-    let disks = content.lines().filter(|line| {
-        let line = line.trim_start();
-        // While the `sd` prefix is most common, some disks instead use the `nvme` prefix. This
-        // prefix refers to NVM (non-volatile memory) cabale SSDs. These disks run on the NVMe
-        // storage controller protocol (not the scsi protocol) and as a result use a different
-        // prefix to support NVMe namespaces.
-        //
-        // In some other cases, it uses a device mapper to map physical block devices onto
-        // higher-level virtual block devices (on `/dev/mapper`).
-        //
-        // Raspbian uses root and mmcblk for physical disks
-        line.starts_with("/dev/sd")
-            || line.starts_with("/dev/nvme")
-            || line.starts_with("/dev/mapper/")
-            || line.starts_with("/dev/root")
-            || line.starts_with("/dev/mmcblk")
-    });
+    let disks = content.lines();
     let mut ret = vec![];
 
     for line in disks {
         let mut split = line.split(' ');
         if let (Some(name), Some(mountpt), Some(fs)) = (split.next(), split.next(), split.next()) {
             ret.push(disk::new(
-                name[5..].as_ref(),
+                name.as_ref(),
                 Path::new(mountpt),
                 fs.as_bytes(),
             ));
