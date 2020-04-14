@@ -741,17 +741,10 @@ fn copy_from_file(entry: &Path) -> Vec<String> {
 
 fn get_all_data_from_file(file: &mut File, size: usize) -> io::Result<String> {
     use std::io::Seek;
-
-    let mut data = Vec::with_capacity(size);
-    unsafe {
-        data.set_len(size);
-    }
-
+    let mut buf = String::with_capacity(size);
     file.seek(::std::io::SeekFrom::Start(0))?;
-    let size = file.read(&mut data)?;
-    data.truncate(size);
-    Ok(String::from_utf8(data)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.description()))?)
+    file.read_to_string(&mut buf)?;
+    Ok(buf)
 }
 
 pub fn get_all_data<P: AsRef<Path>>(file_path: P, size: usize) -> io::Result<String> {
