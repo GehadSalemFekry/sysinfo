@@ -577,11 +577,11 @@ fn _get_process_data(
     uptime: u64,
     now: u64,
 ) -> Result<Option<Process>, ()> {
+    debug!("Get PID: {}:{}", pid, proc_list.pid);
     let nb = match path.file_name().and_then(|x| x.to_str()).map(Pid::from_str) {
         Some(Ok(nb)) if nb != pid => nb,
         _ => return Err(()),
     };
-
     let get_status = |p: &mut Process, part: &str| {
         p.status = part
             .chars()
