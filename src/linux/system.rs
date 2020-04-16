@@ -132,6 +132,7 @@ impl System {
     }
 
     fn refresh_processors(&mut self, limit: Option<u32>) {
+        debug!("Refresh Processors");
         if let Ok(f) = File::open("/proc/stat") {
             let buf = BufReader::new(f);
             let mut i = 0;
@@ -207,6 +208,7 @@ impl SystemExt for System {
     }
 
     fn refresh_memory(&mut self) {
+        debug!("Refresh Memory");
         self.uptime = get_uptime();
         if let Ok(data) = get_all_data("/proc/meminfo", 16_385) {
             for line in data.split('\n') {
@@ -227,17 +229,20 @@ impl SystemExt for System {
     }
 
     fn refresh_cpu(&mut self) {
+        debug!("Refresh CPU");
         self.uptime = get_uptime();
         self.refresh_processors(None);
     }
 
     fn refresh_temperatures(&mut self) {
+        debug!("Refresh Temperature");
         for component in &mut self.temperatures {
             component.update();
         }
     }
 
     fn refresh_processes(&mut self) {
+        debug!("Refresh Processes");
         self.uptime = get_uptime();
         if refresh_procs(
             &mut self.process_list,
@@ -282,16 +287,19 @@ impl SystemExt for System {
     }
 
     fn refresh_disks(&mut self) {
+        debug!("Refresh Disks");
         for disk in &mut self.disks {
             disk.update();
         }
     }
 
     fn refresh_disk_list(&mut self) {
+        debug!("Refresh Disk List");
         self.disks = get_all_disks();
     }
 
     fn refresh_network(&mut self) {
+        debug!("Refresh Network");
         network::update_network(&mut self.network);
     }
 

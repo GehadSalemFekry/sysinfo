@@ -55,6 +55,9 @@ extern crate libc;
 extern crate rayon;
 
 #[macro_use]
+extern crate log;
+
+#[macro_use]
 extern crate doc_comment;
 
 #[cfg(test)]
