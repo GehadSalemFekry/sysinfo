@@ -482,6 +482,7 @@ fn update_time_and_memory(
             u64::from_str(parts[13]).unwrap_or(0),
             u64::from_str(parts[14]).unwrap_or(0),
         );
+        entry.priority = i32::from_str(parts[17]).unwrap_or(0);
     }
     refresh_procs(
         entry,
@@ -645,7 +646,7 @@ fn _get_process_data(
 
     p.stat_file = stat_file;
     get_status(&mut p, parts[2]);
-    p.priority = parts[18].parse::<i32>().unwrap_or(0);
+    p.priority = parts[17].parse::<i32>().unwrap_or(0);
     p.threads_total = parts[19].parse::<u64>().unwrap_or(0);
     tmp.pop();
     tmp.push("status");
