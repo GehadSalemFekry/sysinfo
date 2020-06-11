@@ -60,8 +60,26 @@ impl Component {
             None => None,
         }
     }
+}
 
-    pub(crate) fn refresh(&mut self) {
+impl ComponentExt for Component {
+    fn get_temperature(&self) -> f32 {
+        self.temperature
+    }
+
+    fn get_max(&self) -> f32 {
+        self.max
+    }
+
+    fn get_critical(&self) -> Option<f32> {
+        self.critical
+    }
+
+    fn get_label(&self) -> &str {
+        &self.label
+    }
+
+    fn refresh(&mut self) {
         if self.connection.is_none() {
             self.connection = Connection::new()
                 .and_then(|x| x.initialize_security())
@@ -82,24 +100,6 @@ impl Component {
                 }
             }
         }
-    }
-}
-
-impl ComponentExt for Component {
-    fn get_temperature(&self) -> f32 {
-        self.temperature
-    }
-
-    fn get_max(&self) -> f32 {
-        self.max
-    }
-
-    fn get_critical(&self) -> Option<f32> {
-        self.critical
-    }
-
-    fn get_label(&self) -> &str {
-        &self.label
     }
 }
 
@@ -158,6 +158,9 @@ struct Connection {
     server_connection: Option<ServerConnection>,
     enumerator: Option<Enumerator>,
 }
+
+unsafe impl Send for Connection {}
+unsafe impl Sync for Connection {}
 
 impl Connection {
     fn new() -> Option<Connection> {

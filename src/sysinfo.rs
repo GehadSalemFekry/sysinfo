@@ -14,18 +14,18 @@
 //! ```
 //! use sysinfo::{ProcessExt, SystemExt};
 //!
-//! let mut system = sysinfo::System::new();
+//! let mut system = sysinfo::System::new_all();
 //!
 //! // First we update all information of our system struct.
 //! system.refresh_all();
 //!
 //! // Now let's print every process' id and name:
-//! for (pid, proc_) in system.get_process_list() {
+//! for (pid, proc_) in system.get_processes() {
 //!     println!("{}:{} => status: {:?}", pid, proc_.name(), proc_.status());
 //! }
 //!
 //! // Then let's print the temperature of the different components:
-//! for component in system.get_components_list() {
+//! for component in system.get_components() {
 //!     println!("{:?}", component);
 //! }
 //!
@@ -45,6 +45,7 @@
 #![crate_type = "lib"]
 #![crate_type = "rlib"]
 #![warn(missing_docs)]
+#![deny(intra_doc_link_resolution_failure)]
 //#![deny(warnings)]
 #![allow(unknown_lints)]
 
@@ -55,35 +56,64 @@ extern crate libc;
 extern crate rayon;
 
 #[macro_use]
-extern crate log;
-
-#[macro_use]
 extern crate doc_comment;
 
-#[cfg(test)]
+extern crate once_cell;
+
+#[cfg(doctest)]
 doctest!("../README.md");
+
+#[cfg(feature = "debug")]
+#[doc(hidden)]
+macro_rules! sysinfo_debug {
+    ($($x:tt)*) => {{
+        eprintln!($($x)*);
+    }}
+}
+
+#[cfg(not(feature = "debug"))]
+#[doc(hidden)]
+macro_rules! sysinfo_debug {
+    ($($x:tt)*) => {{}};
+}
 
 cfg_if! {
     if #[cfg(target_os = "macos")] {
         mod mac;
         use mac as sys;
+
+        #[cfg(test)]
+        const MIN_USERS: usize = 1;
     } else if #[cfg(windows)] {
         mod windows;
         use windows as sys;
         extern crate winapi;
         extern crate ntapi;
-    } else if #[cfg(unix)] {
+
+        #[cfg(test)]
+        const MIN_USERS: usize = 1;
+    } else if #[cfg(any(target_os = "linux", target_os = "android"))] {
         mod linux;
         use linux as sys;
+
+        #[cfg(test)]
+        const MIN_USERS: usize = 1;
     } else {
         mod unknown;
         use unknown as sys;
+
+        #[cfg(test)]
+        const MIN_USERS: usize = 0;
     }
 }
 
-pub use common::{AsU32, Pid, RefreshKind};
-pub use sys::{Component, Disk, DiskType, NetworkData, Process, ProcessStatus, Processor, System};
-pub use traits::{ComponentExt, DiskExt, NetworkExt, ProcessExt, ProcessorExt, SystemExt};
+pub use common::{
+    AsU32, DiskType, DiskUsage, LoadAvg, NetworksIter, Pid, RefreshKind, Signal, User,
+};
+pub use sys::{Component, Disk, NetworkData, Networks, Process, ProcessStatus, Processor, System};
+pub use traits::{
+    ComponentExt, DiskExt, NetworkExt, NetworksExt, ProcessExt, ProcessorExt, SystemExt, UserExt,
+};
 
 #[cfg(feature = "c-interface")]
 pub use c_interface::*;
@@ -92,125 +122,63 @@ pub use utils::get_current_pid;
 #[cfg(feature = "c-interface")]
 mod c_interface;
 mod common;
-mod component;
-mod process;
-mod processor;
+mod debug;
 mod system;
 mod traits;
 mod utils;
 
-/// This function is only used on linux targets, on the other platforms it does nothing.
+/// This function is only used on linux targets, on the other platforms it does nothing and returns
+/// `false`.
 ///
 /// On linux, to improve performance, we keep a `/proc` file open for each process we index with
 /// a maximum number of files open equivalent to half of the system limit.
 ///
 /// The problem is that some users might need all the available file descriptors so we need to
-/// allow them to change this limit. Reducing 
+/// allow them to change this limit.
 ///
 /// Note that if you set a limit bigger than the system limit, the system limit will be set.
 ///
 /// Returns `true` if the new value has been set.
-pub fn set_open_files_limit(mut new_limit: isize) -> bool {
-    #[cfg(all(not(target_os = "macos"), unix))]
+///
+/// ```no_run
+/// use sysinfo::{System, SystemExt, set_open_files_limit};
+///
+/// // We call the function before any call to the processes update.
+/// if !set_open_files_limit(10) {
+///     // It'll always return false on non-linux targets.
+///     eprintln!("failed to update the open files limit...");
+/// }
+/// let s = System::new_all();
+/// ```
+pub fn set_open_files_limit(mut _new_limit: isize) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        if new_limit < 0 {
-            new_limit = 0;
+        if _new_limit < 0 {
+            _new_limit = 0;
         }
         let max = sys::system::get_max_nb_fds();
-        if new_limit > max {
-            new_limit = max;
+        if _new_limit > max {
+            _new_limit = max;
         }
-        return if let Ok(ref mut x) = unsafe { sys::system::REMAINING_FILES.lock() } {
+        if let Ok(ref mut x) = unsafe { sys::system::REMAINING_FILES.lock() } {
             // If files are already open, to be sure that the number won't be bigger when those
             // files are closed, we subtract the current number of opened files to the new limit.
             let diff = max - **x;
-            **x = new_limit - diff;
+            **x = _new_limit - diff;
             true
         } else {
             false
-        };
+        }
     }
-    #[cfg(any(not(unix), target_os = "macos"))]
+    #[cfg(all(not(target_os = "linux"), not(target_os = "android")))]
     {
-        return false;
+        false
     }
-}
-
-/// An enum representing signal on UNIX-like systems.
-#[repr(C)]
-#[derive(Clone, PartialEq, PartialOrd, Debug, Copy)]
-pub enum Signal {
-    /// Hangup detected on controlling terminal or death of controlling process.
-    Hangup = 1,
-    /// Interrupt from keyboard.
-    Interrupt = 2,
-    /// Quit from keyboard.
-    Quit = 3,
-    /// Illegal instruction.
-    Illegal = 4,
-    /// Trace/breakpoint trap.
-    Trap = 5,
-    /// Abort signal from C abort function.
-    Abort = 6,
-    // IOT trap. A synonym for SIGABRT.
-    // IOT = 6,
-    /// Bus error (bad memory access).
-    Bus = 7,
-    /// Floating point exception.
-    FloatingPointException = 8,
-    /// Kill signal.
-    Kill = 9,
-    /// User-defined signal 1.
-    User1 = 10,
-    /// Invalid memory reference.
-    Segv = 11,
-    /// User-defined signal 2.
-    User2 = 12,
-    /// Broken pipe: write to pipe with no readers.
-    Pipe = 13,
-    /// Timer signal from C alarm function.
-    Alarm = 14,
-    /// Termination signal.
-    Term = 15,
-    /// Stack fault on coprocessor (unused).
-    Stklft = 16,
-    /// Child stopped or terminated.
-    Child = 17,
-    /// Continue if stopped.
-    Continue = 18,
-    /// Stop process.
-    Stop = 19,
-    /// Stop typed at terminal.
-    TSTP = 20,
-    /// Terminal input for background process.
-    TTIN = 21,
-    /// Terminal output for background process.
-    TTOU = 22,
-    /// Urgent condition on socket.
-    Urgent = 23,
-    /// CPU time limit exceeded.
-    XCPU = 24,
-    /// File size limit exceeded.
-    XFSZ = 25,
-    /// Virtual alarm clock.
-    VirtualAlarm = 26,
-    /// Profiling time expired.
-    Profiling = 27,
-    /// Windows resize signal.
-    Winch = 28,
-    /// I/O now possible.
-    IO = 29,
-    // Pollable event (Sys V). Synonym for IO
-    //Poll = 29,
-    /// Power failure (System V).
-    Power = 30,
-    /// Bad argument to routine (SVr4).
-    Sys = 31,
 }
 
 #[cfg(test)]
 mod test {
-    use traits::{ProcessExt, SystemExt};
+    use super::*;
 
     #[test]
     fn check_memory_usage() {
@@ -218,10 +186,41 @@ mod test {
 
         s.refresh_all();
         assert_eq!(
-            s.get_process_list()
+            s.get_processes()
                 .iter()
                 .all(|(_, proc_)| proc_.memory() == 0),
             false
         );
     }
+
+    #[test]
+    fn check_users() {
+        let mut s = ::System::new();
+        assert!(s.get_users().is_empty());
+        s.refresh_users_list();
+        assert!(s.get_users().len() >= MIN_USERS);
+
+        let mut s = ::System::new();
+        assert!(s.get_users().is_empty());
+        s.refresh_all();
+        assert!(s.get_users().is_empty());
+
+        let s = ::System::new_all();
+        assert!(s.get_users().len() >= MIN_USERS);
+    }
 }
+
+// Used to check that System is Send and Sync.
+#[cfg(doctest)]
+doc_comment!(
+    "
+```
+fn is_send<T: Send>() {}
+is_send::<sysinfo::System>();
+```
+
+```
+fn is_sync<T: Sync>() {}
+is_sync::<sysinfo::System>();
+```"
+);

@@ -14,7 +14,11 @@ use std::path::{Path, PathBuf};
 
 /// More information can be found at [kernel.org][k].
 ///
-/// k: https://www.kernel.org/doc/Documentation/hwmon/sysfs-interface
+/// Note: these may not be present on virtual Linux systems, such as **Docker**
+/// or **Windows Subsystem for Linux**. These hosts do not expose this information
+/// and therefore `Component` elements may be missing or not as expected.
+///
+/// [k]: https://www.kernel.org/doc/Documentation/hwmon/sysfs-interface
 pub struct Component {
     temperature: f32,
     max: f32,
@@ -71,7 +75,7 @@ fn append_files(components: &mut Vec<Component>, folder: &Path) {
                                     parts
                                         .next()
                                         .map(|s| format!("_{}", s))
-                                        .unwrap_or_else(|| String::new()),
+                                        .unwrap_or_else(String::new),
                                 );
                         }
                     }
@@ -93,14 +97,14 @@ fn append_files(components: &mut Vec<Component>, folder: &Path) {
                     _ => {}
                 }
             }
-            if found_label.is_some() && found_input.is_some() {
+            if let (Some(_), Some(found_input)) = (found_label, found_input) {
                 let mut p_label = folder.to_path_buf();
                 let mut p_input = folder.to_path_buf();
                 let mut p_crit = folder.to_path_buf();
                 let mut p_max = folder.to_path_buf();
 
                 p_label.push(&format!("temp{}_label", key));
-                p_input.push(&format!("temp{}{}", key, val[found_input.unwrap()]));
+                p_input.push(&format!("temp{}{}", key, val[found_input]));
                 p_max.push(&format!("temp{}_max", key));
                 p_crit.push(&format!("temp{}_crit", key));
                 if is_file(&p_input) {
@@ -126,7 +130,7 @@ fn append_files(components: &mut Vec<Component>, folder: &Path) {
 
 impl Component {
     /// Creates a new component with the given information.
-    pub fn new(
+    pub(crate) fn new(
         label: String,
         input_path: &Path,
         max: Option<f32>,
@@ -139,22 +143,8 @@ impl Component {
             max: max.unwrap_or(0.0),
             critical,
         };
-        c.update();
+        c.refresh();
         c
-    }
-
-    /// Updates the component.
-    pub fn update(&mut self) {
-        if let Some(content) = get_file_line(self.input_file.as_path(), 10) {
-            self.temperature = content
-                .replace("\n", "")
-                .parse::<f32>()
-                .unwrap_or(100_000f32)
-                / 1000f32;
-            if self.temperature > self.max {
-                self.max = self.temperature;
-            }
-        }
     }
 }
 
@@ -173,6 +163,19 @@ impl ComponentExt for Component {
 
     fn get_label(&self) -> &str {
         &self.label
+    }
+
+    fn refresh(&mut self) {
+        if let Some(content) = get_file_line(self.input_file.as_path(), 10) {
+            self.temperature = content
+                .replace("\n", "")
+                .parse::<f32>()
+                .unwrap_or(100_000f32)
+                / 1000f32;
+            if self.temperature > self.max {
+                self.max = self.temperature;
+            }
+        }
     }
 }
 

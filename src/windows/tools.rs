@@ -4,9 +4,10 @@
 // Copyright (c) 2018 Guillaume Gomez
 //
 
-use windows::processor::{create_processor, CounterValue, Processor, Query};
+use windows::processor::{self, Processor, Query};
 
-use sys::disk::{new_disk, Disk, DiskType};
+use sys::disk::{new_disk, Disk};
+use DiskType;
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -23,7 +24,7 @@ use winapi::um::fileapi::{
 use winapi::um::handleapi::CloseHandle;
 use winapi::um::handleapi::INVALID_HANDLE_VALUE;
 use winapi::um::ioapiset::DeviceIoControl;
-use winapi::um::sysinfoapi::{GetSystemInfo, GetTickCount64, SYSTEM_INFO};
+use winapi::um::sysinfoapi::{GetSystemInfo, SYSTEM_INFO};
 use winapi::um::winbase::DRIVE_FIXED;
 use winapi::um::winioctl::{
     DISK_GEOMETRY, IOCTL_DISK_GET_DRIVE_GEOMETRY, IOCTL_STORAGE_QUERY_PROPERTY,
@@ -44,57 +45,22 @@ impl KeyHandler {
     }
 }
 
-/*#[allow(non_snake_case)]
-#[allow(unused)]
-unsafe fn browser() {
-    use winapi::um::pdh::{PdhBrowseCountersA, PDH_BROWSE_DLG_CONFIG_A};
-    use winapi::shared::winerror::ERROR_SUCCESS;
-
-    let mut BrowseDlgData: PDH_BROWSE_DLG_CONFIG_A = ::std::mem::zeroed();
-    let mut CounterPathBuffer: [i8; 255] = ::std::mem::zeroed();
-    const PERF_DETAIL_WIZARD: u32 = 400;
-    let text = b"Select a counter to monitor.\0";
-
-    BrowseDlgData.set_IncludeInstanceIndex(FALSE as u32);
-    BrowseDlgData.set_SingleCounterPerAdd(TRUE as u32);
-    BrowseDlgData.set_SingleCounterPerDialog(TRUE as u32);
-    BrowseDlgData.set_LocalCountersOnly(FALSE as u32);
-    BrowseDlgData.set_WildCardInstances(TRUE as u32);
-    BrowseDlgData.set_HideDetailBox(TRUE as u32);
-    BrowseDlgData.set_InitializePath(FALSE as u32);
-    BrowseDlgData.set_DisableMachineSelection(FALSE as u32);
-    BrowseDlgData.set_IncludeCostlyObjects(FALSE as u32);
-    BrowseDlgData.set_ShowObjectBrowser(FALSE as u32);
-    BrowseDlgData.hWndOwner = ::std::ptr::null_mut();
-    BrowseDlgData.szReturnPathBuffer = CounterPathBuffer.as_mut_ptr();
-    BrowseDlgData.cchReturnPathLength = 255;
-    BrowseDlgData.pCallBack = None;
-    BrowseDlgData.dwCallBackArg = 0;
-    BrowseDlgData.CallBackStatus = ERROR_SUCCESS as i32;
-    BrowseDlgData.dwDefaultDetailLevel = PERF_DETAIL_WIZARD;
-    BrowseDlgData.szDialogBoxCaption = text as *const _ as usize as *mut i8;
-    let ret = PdhBrowseCountersA(&mut BrowseDlgData as *mut _);
-    println!("browser: {:?}", ret);
-    for x in CounterPathBuffer.iter() {
-        print!("{:?} ", *x);
-    }
-    println!("");
-    for x in 0..256 {
-        print!("{:?} ", *BrowseDlgData.szReturnPathBuffer.offset(x));
-    }
-    println!("");
-}*/
-
-pub fn init_processors() -> Vec<Processor> {
+pub fn init_processors() -> (Vec<Processor>, String, String) {
     unsafe {
         let mut sys_info: SYSTEM_INFO = zeroed();
         GetSystemInfo(&mut sys_info);
+        let (vendor_id, brand) = processor::get_vendor_id_and_brand(&sys_info);
+        let frequencies = processor::get_frequencies(sys_info.dwNumberOfProcessors as usize);
         let mut ret = Vec::with_capacity(sys_info.dwNumberOfProcessors as usize + 1);
         for nb in 0..sys_info.dwNumberOfProcessors {
-            ret.push(create_processor(&format!("CPU {}", nb + 1)));
+            ret.push(Processor::new_with_values(
+                &format!("CPU {}", nb + 1),
+                vendor_id.clone(),
+                brand.clone(),
+                frequencies[nb as usize],
+            ));
         }
-        ret.insert(0, create_processor("Total CPU"));
-        ret
+        (ret, vendor_id, brand)
     }
 }
 
@@ -194,13 +160,7 @@ pub unsafe fn get_disks() -> Vec<Disk> {
             let handle = open_drive(&drive_name, 0);
             if handle == INVALID_HANDLE_VALUE {
                 CloseHandle(handle);
-                return Some(new_disk(
-                    name,
-                    &mount_point,
-                    &file_system,
-                    DiskType::Unknown(-1),
-                    0,
-                ));
+                return new_disk(name, &mount_point, &file_system, DiskType::Unknown(-1), 0);
             }
             let disk_size = get_drive_size(handle);
             /*let mut spq_trim: ffi::STORAGE_PROPERTY_QUERY = ::std::mem::zeroed();
@@ -242,23 +202,23 @@ pub unsafe fn get_disks() -> Vec<Disk> {
                 || dw_size != size_of::<DEVICE_TRIM_DESCRIPTOR>() as DWORD
             {
                 CloseHandle(handle);
-                return Some(new_disk(
+                return new_disk(
                     name,
                     &mount_point,
                     &file_system,
                     DiskType::Unknown(-1),
                     disk_size,
-                ));
+                );
             }
             let is_ssd = dtd.TrimEnabled != 0;
             CloseHandle(handle);
-            Some(new_disk(
+            new_disk(
                 name,
                 &mount_point,
                 &file_system,
                 if is_ssd { DiskType::SSD } else { DiskType::HDD },
                 disk_size,
-            ))
+            )
         })
         .collect::<Vec<_>>()
 }
@@ -349,15 +309,10 @@ pub fn add_counter(
     query: &mut Query,
     keys: &mut Option<KeyHandler>,
     counter_name: String,
-    value: CounterValue,
 ) {
     let mut full = s.encode_utf16().collect::<Vec<_>>();
     full.push(0);
-    if query.add_counter(&counter_name, full.clone(), value) {
+    if query.add_counter(&counter_name, full.clone()) {
         *keys = Some(KeyHandler::new(counter_name, full));
     }
-}
-
-pub fn get_uptime() -> u64 {
-    unsafe { GetTickCount64() / 1000 }
 }

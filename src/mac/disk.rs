@@ -6,11 +6,11 @@
 
 use utils;
 use DiskExt;
+use DiskType;
 
 use libc::{c_char, c_void, statfs};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::fmt::{Debug, Error, Formatter};
 use std::fs;
 use std::mem;
 use std::mem::MaybeUninit;
@@ -18,27 +18,6 @@ use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use sys::ffi;
-
-/// Enum containing the different handled disks types.
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum DiskType {
-    /// HDD type.
-    HDD,
-    /// SSD type.
-    SSD,
-    /// Unknown type.
-    Unknown(isize),
-}
-
-impl From<isize> for DiskType {
-    fn from(t: isize) -> DiskType {
-        match t {
-            0 => DiskType::HDD,
-            1 => DiskType::SSD,
-            id => DiskType::Unknown(id),
-        }
-    }
-}
 
 /// Struct containing a disk information.
 #[derive(Clone)]
@@ -49,21 +28,6 @@ pub struct Disk {
     mount_point: PathBuf,
     total_space: u64,
     available_space: u64,
-}
-
-impl Debug for Disk {
-    fn fmt(&self, fmt: &mut Formatter) -> Result<(), Error> {
-        write!(
-            fmt,
-            "Disk({:?})[FS: {:?}][Type: {:?}] mounted on {:?}: {}/{} B",
-            self.get_name(),
-            self.get_file_system(),
-            self.get_type(),
-            self.get_mount_point(),
-            self.get_available_space(),
-            self.get_total_space()
-        )
-    }
 }
 
 impl DiskExt for Disk {
@@ -91,7 +55,7 @@ impl DiskExt for Disk {
         self.available_space
     }
 
-    fn update(&mut self) -> bool {
+    fn refresh(&mut self) -> bool {
         unsafe {
             let mut stat: statfs = mem::zeroed();
             let mount_point_cpath = utils::to_cpath(&self.mount_point);
@@ -105,17 +69,8 @@ impl DiskExt for Disk {
     }
 }
 
-macro_rules! unwrapper {
-    ($b:expr, $ret:expr) => {{
-        match $b {
-            Ok(x) => x,
-            _ => return $ret,
-        }
-    }};
-}
-
 static DISK_TYPES: once_cell::sync::Lazy<HashMap<OsString, DiskType>> =
-    once_cell::sync::Lazy::new(|| get_disk_types());
+    once_cell::sync::Lazy::new(get_disk_types);
 
 fn get_disk_types() -> HashMap<OsString, DiskType> {
     let mut master_port: ffi::mach_port_t = 0;
@@ -132,7 +87,7 @@ fn get_disk_types() -> HashMap<OsString, DiskType> {
             &mut media_iterator,
         );
         if result != ffi::KERN_SUCCESS as i32 {
-            //println!("Error: IOServiceGetMatchingServices() = {}", result);
+            sysinfo_debug!("Error: IOServiceGetMatchingServices() = {}", result);
             return ret;
         }
 
@@ -182,25 +137,28 @@ fn make_name(v: &[u8]) -> OsString {
 }
 
 pub(crate) fn get_disks() -> Vec<Disk> {
-    unwrapper!(fs::read_dir("/Volumes"), Vec::new())
-        .flat_map(|x| {
-            if let Ok(ref entry) = x {
-                let mount_point = utils::realpath(&entry.path());
-                if mount_point.as_os_str().is_empty() {
-                    None
+    match fs::read_dir("/Volumes") {
+        Ok(d) => d
+            .flat_map(|x| {
+                if let Ok(ref entry) = x {
+                    let mount_point = utils::realpath(&entry.path());
+                    if mount_point.as_os_str().is_empty() {
+                        None
+                    } else {
+                        let name = entry.path().file_name()?.to_owned();
+                        let type_ = DISK_TYPES
+                            .get(&name)
+                            .cloned()
+                            .unwrap_or(DiskType::Unknown(-2));
+                        new_disk(name, &mount_point, type_)
+                    }
                 } else {
-                    let name = entry.path().file_name()?.to_owned();
-                    let type_ = DISK_TYPES
-                        .get(&name)
-                        .cloned()
-                        .unwrap_or(DiskType::Unknown(-2));
-                    Some(new_disk(name, &mount_point, type_))
+                    None
                 }
-            } else {
-                None
-            }
-        })
-        .collect()
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 unsafe fn check_value(dict: ffi::CFMutableDictionaryRef, key: &[u8]) -> bool {
@@ -218,7 +176,7 @@ unsafe fn check_value(dict: ffi::CFMutableDictionaryRef, key: &[u8]) -> bool {
     ret
 }
 
-fn new_disk(name: OsString, mount_point: &Path, type_: DiskType) -> Disk {
+fn new_disk(name: OsString, mount_point: &Path, type_: DiskType) -> Option<Disk> {
     let mount_point_cpath = utils::to_cpath(mount_point);
     let mut total_space = 0;
     let mut available_space = 0;
@@ -238,12 +196,15 @@ fn new_disk(name: OsString, mount_point: &Path, type_: DiskType) -> Disk {
             file_system = Some(vec);
         }
     }
-    Disk {
+    if total_space == 0 {
+        return None;
+    }
+    Some(Disk {
         type_,
         name,
         file_system: file_system.unwrap_or_else(|| b"<Unknown>".to_vec()),
         mount_point: mount_point.to_owned(),
         total_space,
         available_space,
-    }
+    })
 }

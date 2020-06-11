@@ -7,7 +7,15 @@
 use libc::{c_char, c_int, c_uchar, c_uint, c_ushort, c_void, size_t};
 
 extern "C" {
+    #[no_mangle]
     pub static kCFAllocatorDefault: CFAllocatorRef;
+    // #[no_mangle]
+    // pub static kODSessionDefault: ODSessionRef;
+    #[no_mangle]
+    pub static kCFAllocatorNull: CFAllocatorRef;
+    // from https://github.com/apple/ccs-pyosxframeworks/blob/ccbacc3408bd7583a7535bbaca4020bdfe94bd2f/osx/frameworks/_opendirectory_cffi.py
+    // #[no_mangle]
+    // pub static kODRecordTypeUsers: ODRecordType;
 
     pub fn proc_pidinfo(
         pid: c_int,
@@ -22,6 +30,7 @@ extern "C" {
     //pub fn proc_regionfilename(pid: c_int, address: u64, buffer: *mut c_void,
     //                           buffersize: u32) -> c_int;
     pub fn proc_pidpath(pid: c_int, buffer: *mut c_void, buffersize: u32) -> c_int;
+    pub fn proc_pid_rusage(pid: c_int, flavor: c_int, buffer: *mut c_void) -> c_int;
 
     pub fn IOMasterPort(a: i32, b: *mut mach_port_t) -> i32;
     pub fn IOServiceMatching(a: *const c_char) -> *mut c_void;
@@ -58,8 +67,35 @@ extern "C" {
         encoding: CFStringEncoding,
         contentsDeallocator: *mut c_void,
     ) -> CFStringRef;
+    // pub fn CFStringGetCharactersPtr(theString: CFStringRef) -> *mut u16;
+    // pub fn CFStringGetLength(theString: CFStringRef) -> CFIndex;
+    // pub fn CFStringGetCharacterAtIndex(theString: CFStringRef, idx: CFIndex) -> u16;
 
-    pub static kCFAllocatorNull: CFAllocatorRef;
+    // pub fn ODNodeCreateWithName(
+    //     allocator: CFAllocatorRef,
+    //     session: ODSessionRef,
+    //     nodeName: CFStringRef,
+    //     error: *mut CFErrorRef,
+    // ) -> ODNodeRef;
+    // pub fn ODQueryCopyResults(
+    //     query: ODQueryRef,
+    //     allowPartialResults: Boolean,
+    //     error: *mut CFErrorRef,
+    // ) -> CFArrayRef;
+    // pub fn ODQueryCreateWithNode(
+    //     allocator: CFAllocatorRef,
+    //     node: ODNodeRef,
+    //     recordTypeOrList: CFTypeRef,
+    //     attribute: ODAttributeType,
+    //     matchType: ODMatchType,
+    //     queryValueOrList: CFTypeRef,
+    //     returnAttributeOrList: CFTypeRef,
+    //     maxResults: CFIndex,
+    //     error: *mut CFErrorRef,
+    // ) -> ODQueryRef;
+    // pub fn CFArrayGetCount(theArray: CFArrayRef) -> CFIndex;
+    // pub fn CFArrayGetValueAtIndex(theArray: CFArrayRef, idx: CFIndex) -> *const c_void;
+    // pub fn ODRecordGetRecordName(record: ODRecordRef) -> CFStringRef;
 
     pub fn mach_absolute_time() -> u64;
     //pub fn task_for_pid(host: u32, pid: pid_t, task: *mut task_t) -> u32;
@@ -82,14 +118,17 @@ extern "C" {
     //pub fn host_statistics(host_priv: u32, flavor: u32, host_info: *mut c_void,
     //                       host_count: *const u32) -> u32;
     pub fn vm_deallocate(target_task: u32, address: *mut i32, size: u32) -> kern_return_t;
+    pub fn sysctlbyname(
+        name: *const c_char,
+        oldp: *mut c_void,
+        oldlenp: *mut usize,
+        newp: *mut c_void,
+        newlen: usize,
+    ) -> kern_return_t;
+    pub fn getloadavg(loads: *const f64, size: c_int);
 
 // pub fn proc_pidpath(pid: i32, buf: *mut i8, bufsize: u32) -> i32;
 // pub fn proc_name(pid: i32, buf: *mut i8, bufsize: u32) -> i32;
-}
-
-#[link(name = "proc", kind = "dylib")]
-extern {
-    pub fn proc_pid_rusage(pid: c_int, flavor: c_int, buffer: *mut c_void) -> c_int;
 }
 
 // TODO: waiting for https://github.com/rust-lang/libc/pull/678
@@ -198,6 +237,42 @@ pub struct __CFString {
     __private: c_void,
 }
 
+#[cfg_attr(feature = "debug", derive(Debug))]
+#[repr(C)]
+pub struct __ODNode {
+    __private: c_void,
+}
+
+#[cfg_attr(feature = "debug", derive(Debug))]
+#[repr(C)]
+pub struct __ODSession {
+    __private: c_void,
+}
+
+#[cfg_attr(feature = "debug", derive(Debug))]
+#[repr(C)]
+pub struct __CFError {
+    __private: c_void,
+}
+
+#[cfg_attr(feature = "debug", derive(Debug))]
+#[repr(C)]
+pub struct __CFArray {
+    __private: c_void,
+}
+
+#[cfg_attr(feature = "debug", derive(Debug))]
+#[repr(C)]
+pub struct __ODRecord {
+    __private: c_void,
+}
+
+#[cfg_attr(feature = "debug", derive(Debug))]
+#[repr(C)]
+pub struct __ODQuery {
+    __private: c_void,
+}
+
 pub type CFAllocatorRef = *const __CFAllocator;
 pub type CFMutableDictionaryRef = *mut __CFDictionary;
 pub type CFDictionaryRef = *const __CFDictionary;
@@ -207,6 +282,12 @@ pub type io_name_t = [u8; 128];
 pub type io_registry_entry_t = io_object_t;
 pub type CFTypeRef = *const c_void;
 pub type CFStringRef = *const __CFString;
+// pub type ODNodeRef = *const __ODNode;
+// pub type ODSessionRef = *const __ODSession;
+// pub type CFErrorRef = *const __CFError;
+// pub type CFArrayRef = *const __CFArray;
+// pub type ODRecordRef = *const __ODRecord;
+// pub type ODQueryRef = *const __ODQuery;
 
 //#[allow(non_camel_case_types)]
 //pub type policy_t = i32;
@@ -239,6 +320,10 @@ pub type kern_return_t = c_int;
 pub type Boolean = c_uchar;
 pub type IOOptionBits = u32;
 pub type CFStringEncoding = u32;
+// pub type ODRecordType = CFStringRef;
+// pub type ODAttributeType = CFStringRef;
+// pub type ODMatchType = u32;
+// pub type CFIndex = c_long;
 
 /*#[repr(C)]
 pub struct task_thread_times_info {
@@ -348,28 +433,28 @@ pub struct xsw_usage {
 }
 
 //https://github.com/andrewdavidmackenzie/libproc-rs/blob/master/src/libproc/pid_rusage.rs
-#[repr(C)]
 #[derive(Debug, Default)]
+#[repr(C)]
 pub struct RUsageInfoV2 {
-    pub ri_uuid                 : [u8; 16],
-    pub ri_user_time            : u64,
-    pub ri_system_time          : u64,
-    pub ri_pkg_idle_wkups       : u64,
-    pub ri_interrupt_wkups      : u64,
-    pub ri_pageins              : u64,
-    pub ri_wired_size           : u64,
-    pub ri_resident_size        : u64,
-    pub ri_phys_footprint       : u64,
-    pub ri_proc_start_abstime   : u64,
-    pub ri_proc_exit_abstime    : u64,
-    pub ri_child_user_time      : u64,
-    pub ri_child_system_time    : u64,
-    pub ri_child_pkg_idle_wkups : u64,
+    pub ri_uuid: [u8; 16],
+    pub ri_user_time: u64,
+    pub ri_system_time: u64,
+    pub ri_pkg_idle_wkups: u64,
+    pub ri_interrupt_wkups: u64,
+    pub ri_pageins: u64,
+    pub ri_wired_size: u64,
+    pub ri_resident_size: u64,
+    pub ri_phys_footprint: u64,
+    pub ri_proc_start_abstime: u64,
+    pub ri_proc_exit_abstime: u64,
+    pub ri_child_user_time: u64,
+    pub ri_child_system_time: u64,
+    pub ri_child_pkg_idle_wkups: u64,
     pub ri_child_interrupt_wkups: u64,
-    pub ri_child_pageins        : u64,
+    pub ri_child_pageins: u64,
     pub ri_child_elapsed_abstime: u64,
-    pub ri_diskio_bytesread     : u64,
-    pub ri_diskio_byteswritten  : u64,
+    pub ri_diskio_bytesread: u64,
+    pub ri_diskio_byteswritten: u64,
 }
 
 //pub const HOST_CPU_LOAD_INFO_COUNT: usize = 4;

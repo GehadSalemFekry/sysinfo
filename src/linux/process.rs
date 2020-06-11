@@ -5,12 +5,13 @@
 //
 
 use std::collections::HashMap;
-use std::fmt::{self, Debug, Formatter};
+use std::fmt;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use libc::{c_int, gid_t, kill, uid_t};
 
+use DiskUsage;
 use Pid;
 use ProcessExt;
 
@@ -124,6 +125,10 @@ pub struct Process {
     /// Tasks run by this process.
     pub tasks: HashMap<Pid, Process>,
     pub(crate) stat_file: Option<File>,
+    old_read_bytes: u64,
+    old_written_bytes: u64,
+    read_bytes: u64,
+    written_bytes: u64,
     pub faults: u64,
     pub pageins: u64,
     pub messages_sent: u64,
@@ -132,8 +137,6 @@ pub struct Process {
     pub threads_running: u64,
     pub priority: i32,
     pub nice: i32,
-    pub read_bytes: u64,
-    pub write_bytes: u64
 }
 
 impl ProcessExt for Process {
@@ -173,8 +176,10 @@ impl ProcessExt for Process {
             threads_running: 0,
             priority: 0,
             nice: 0,
+            old_read_bytes: 0,
+            old_written_bytes: 0,
             read_bytes: 0,
-            write_bytes: 0
+            written_bytes: 0,
         }
     }
 
@@ -235,6 +240,15 @@ impl ProcessExt for Process {
     fn cpu_usage(&self) -> f32 {
         self.cpu_usage
     }
+
+    fn disk_usage(&self) -> DiskUsage {
+        DiskUsage {
+            written_bytes: self.written_bytes - self.old_written_bytes,
+            total_written_bytes: self.written_bytes,
+            read_bytes: self.read_bytes - self.old_read_bytes,
+            total_read_bytes: self.read_bytes,
+        }
+    }
 }
 
 impl Drop for Process {
@@ -244,33 +258,6 @@ impl Drop for Process {
                 **x += 1;
             }
         }
-    }
-}
-
-#[allow(unused_must_use)]
-impl Debug for Process {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        writeln!(f, "pid: {}", self.pid);
-        writeln!(f, "parent: {:?}", self.parent);
-        writeln!(f, "name: {}", self.name);
-        writeln!(f, "environment:");
-        for var in &self.environ {
-            if !var.is_empty() {
-                writeln!(f, "\t{}", var);
-            }
-        }
-        writeln!(f, "command:");
-        for arg in &self.cmd {
-            writeln!(f, "\t{}", arg);
-        }
-        writeln!(f, "executable path: {:?}", self.exe);
-        writeln!(f, "current working directory: {:?}", self.cwd);
-        writeln!(f, "owner/group: {}:{}", self.uid, self.gid);
-        writeln!(f, "memory usage: {} KiB", self.memory);
-        writeln!(f, "virtual memory usage: {} KiB", self.virtual_memory);
-        writeln!(f, "cpu usage: {}%", self.cpu_usage);
-        writeln!(f, "status: {}", self.status);
-        write!(f, "root path: {:?}", self.root)
     }
 }
 
@@ -290,4 +277,39 @@ pub fn set_time(p: &mut Process, utime: u64, stime: u64) {
 
 pub fn has_been_updated(p: &Process) -> bool {
     p.updated
+}
+
+pub(crate) fn update_process_disk_activity(p: &mut Process, path: &Path) {
+    let mut path = PathBuf::from(path);
+    path.push("io");
+    let data = match super::system::get_all_data(&path, 16_384) {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let mut done = 0;
+    for line in data.split('\n') {
+        let mut parts = line.split(": ");
+        match parts.next() {
+            Some("read_bytes") => {
+                p.old_read_bytes = p.read_bytes;
+                p.read_bytes = parts
+                    .next()
+                    .and_then(|x| x.parse::<u64>().ok())
+                    .unwrap_or(p.old_read_bytes);
+            }
+            Some("write_bytes") => {
+                p.old_written_bytes = p.written_bytes;
+                p.written_bytes = parts
+                    .next()
+                    .and_then(|x| x.parse::<u64>().ok())
+                    .unwrap_or(p.old_written_bytes);
+            }
+            _ => continue,
+        }
+        done += 1;
+        if done > 1 {
+            // No need to continue the reading.
+            break;
+        }
+    }
 }

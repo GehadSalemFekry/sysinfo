@@ -5,35 +5,13 @@
 //
 
 use std::ffi::{OsStr, OsString};
-use std::fmt::{Debug, Error, Formatter};
 use std::path::Path;
-use std::str;
 
 use DiskExt;
+use DiskType;
 
 use winapi::um::fileapi::GetDiskFreeSpaceExW;
 use winapi::um::winnt::ULARGE_INTEGER;
-
-/// Enum containing the different handled disks types.
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum DiskType {
-    /// HDD type.
-    HDD,
-    /// SSD type.
-    SSD,
-    /// Unknown type.
-    Unknown(isize),
-}
-
-impl From<isize> for DiskType {
-    fn from(t: isize) -> DiskType {
-        match t {
-            0 => DiskType::HDD,
-            1 => DiskType::SSD,
-            id => DiskType::Unknown(id),
-        }
-    }
-}
 
 pub fn new_disk(
     name: &OsStr,
@@ -41,7 +19,10 @@ pub fn new_disk(
     file_system: &[u8],
     type_: DiskType,
     total_space: u64,
-) -> Disk {
+) -> Option<Disk> {
+    if total_space == 0 {
+        return None;
+    }
     let mut d = Disk {
         type_: type_,
         name: name.to_owned(),
@@ -51,8 +32,8 @@ pub fn new_disk(
         total_space: total_space,
         available_space: 0,
     };
-    d.update();
-    d
+    d.refresh();
+    Some(d)
 }
 
 /// Struct containing a disk information.
@@ -64,21 +45,6 @@ pub struct Disk {
     s_mount_point: String,
     total_space: u64,
     available_space: u64,
-}
-
-impl Debug for Disk {
-    fn fmt(&self, fmt: &mut Formatter) -> Result<(), Error> {
-        write!(
-            fmt,
-            "Disk({:?})[FS: {:?}][Type: {:?}] mounted on {:?}: {}/{} B",
-            self.get_name(),
-            str::from_utf8(self.get_file_system()).unwrap(),
-            self.get_type(),
-            self.get_mount_point(),
-            self.get_available_space(),
-            self.get_total_space()
-        )
-    }
 }
 
 impl DiskExt for Disk {
@@ -106,7 +72,7 @@ impl DiskExt for Disk {
         self.available_space
     }
 
-    fn update(&mut self) -> bool {
+    fn refresh(&mut self) -> bool {
         if self.total_space != 0 {
             unsafe {
                 let mut tmp: ULARGE_INTEGER = ::std::mem::zeroed();

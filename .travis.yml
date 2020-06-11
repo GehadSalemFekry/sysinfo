@@ -25,6 +25,10 @@ matrix:
       rust: stable
       dist: trusty
     - os: linux
+      env: TARGET=wasm32-unknown-unknown
+      rust: stable
+      dist: trusty
+    - os: linux
       rust: nightly
       dist: trusty
     - os: linux
@@ -55,7 +59,7 @@ script:
   - rustc --version
   - sysctl -a | grep mem
   - if [[ "$TRAVIS_RUST_VERSION" == "nightly" ]]; then
-      (rustup component add clippy-preview && cargo clippy) || touch clippy_install_failed;
+      (rustup component add clippy && cargo clippy) || touch clippy_install_failed;
     fi
   - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then
       cargo build --features debug;
@@ -74,6 +78,7 @@ script:
   - if [[ -z "$EXTRA" ]]; then
       RUST_BACKTRACE=1 cargo test;
     fi
+  - cargo doc
   - cd examples
   - if [[ -z "$EXTRA" ]]; then
       RUST_BACKTRACE=1 cargo build;

@@ -8,24 +8,27 @@ use sys::component::Component;
 use sys::process::*;
 use sys::processor::*;
 use sys::Disk;
-use sys::NetworkData;
+use sys::Networks;
+use LoadAvg;
 use Pid;
+use User;
 use {RefreshKind, SystemExt};
 
 use std::collections::HashMap;
 
 /// Structs containing system's information.
-#[derive(Debug)]
 pub struct System {
     processes_list: HashMap<Pid, Process>,
-    network: NetworkData,
+    networks: Networks,
+    global_processor: Processor,
 }
 
 impl SystemExt for System {
     fn new_with_specifics(_: RefreshKind) -> System {
         System {
             processes_list: Default::default(),
-            network: NetworkData,
+            networks: Networks::new(),
+            global_processor: Processor::new(),
         }
     }
 
@@ -33,7 +36,7 @@ impl SystemExt for System {
 
     fn refresh_cpu(&mut self) {}
 
-    fn refresh_temperatures(&mut self) {}
+    fn refresh_components_list(&mut self) {}
 
     fn refresh_processes(&mut self) {}
 
@@ -41,17 +44,15 @@ impl SystemExt for System {
         false
     }
 
-    fn refresh_disks(&mut self) {}
+    fn refresh_disks_list(&mut self) {}
 
-    fn refresh_disk_list(&mut self) {}
-
-    fn refresh_network(&mut self) {}
+    fn refresh_users_list(&mut self) {}
 
     // COMMON PART
     //
     // Need to be moved into a "common" file to avoid duplication.
 
-    fn get_process_list(&self) -> &HashMap<Pid, Process> {
+    fn get_processes(&self) -> &HashMap<Pid, Process> {
         &self.processes_list
     }
 
@@ -59,11 +60,19 @@ impl SystemExt for System {
         None
     }
 
-    fn get_network(&self) -> &NetworkData {
-        &self.network
+    fn get_networks(&self) -> &Networks {
+        &self.networks
     }
 
-    fn get_processor_list(&self) -> &[Processor] {
+    fn get_networks_mut(&mut self) -> &mut Networks {
+        &mut self.networks
+    }
+
+    fn get_global_processor_info(&self) -> &Processor {
+        &self.global_processor
+    }
+
+    fn get_processors(&self) -> &[Processor] {
         &[]
     }
 
@@ -91,16 +100,40 @@ impl SystemExt for System {
         0
     }
 
-    fn get_components_list(&self) -> &[Component] {
+    fn get_components(&self) -> &[Component] {
         &[]
+    }
+
+    fn get_components_mut(&mut self) -> &mut [Component] {
+        &mut []
     }
 
     fn get_disks(&self) -> &[Disk] {
         &[]
     }
 
+    fn get_disks_mut(&mut self) -> &mut [Disk] {
+        &mut []
+    }
+
     fn get_uptime(&self) -> u64 {
         0
+    }
+
+    fn get_boot_time(&self) -> u64 {
+        0
+    }
+
+    fn get_load_average(&self) -> LoadAvg {
+        LoadAvg {
+            one: 0.,
+            five: 0.,
+            fifteen: 0.,
+        }
+    }
+
+    fn get_users(&self) -> &[User] {
+        &[]
     }
 }
 

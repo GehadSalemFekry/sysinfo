@@ -5,6 +5,7 @@
 //
 
 use std::path::Path;
+use DiskUsage;
 use Pid;
 use ProcessExt;
 
@@ -13,7 +14,7 @@ use ProcessExt;
 pub struct ProcessStatus;
 
 /// Struct containing a process' information.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Process {
     pid: Pid,
     parent: Option<Pid>,
@@ -78,5 +79,9 @@ impl ProcessExt for Process {
 
     fn cpu_usage(&self) -> f32 {
         0.0
+    }
+
+    fn disk_usage(&self) -> DiskUsage {
+        DiskUsage::default()
     }
 }

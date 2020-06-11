@@ -25,4 +25,6 @@ impl ComponentExt for Component {
     fn get_label(&self) -> &str {
         ""
     }
+
+    fn refresh(&mut self) {}
 }

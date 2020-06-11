@@ -6,18 +6,19 @@
 
 use sys::component::{self, Component};
 use sys::disk;
-use sys::network;
 use sys::process::*;
 use sys::processor::*;
-use sys::Disk;
-use sys::NetworkData;
+
+use Disk;
+use LoadAvg;
+use Networks;
 use Pid;
-use {DiskExt, ProcessExt, RefreshKind, SystemExt};
+use User;
+use {ProcessExt, RefreshKind, SystemExt};
 
 use libc::{self, gid_t, sysconf, uid_t, _SC_CLK_TCK, _SC_PAGESIZE};
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
-use std::error::Error;
 use std::fs::{self, read_link, File};
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -29,8 +30,9 @@ use utils::realpath;
 
 use rayon::prelude::*;
 
-// This whole thing is to prevent having too much files open at once. It could be problematic
+// This whole thing is to prevent having too many files open at once. It could be problematic
 // for processes using a lot of files and using sysinfo at the same time.
+#[allow(clippy::mutex_atomic)]
 pub(crate) static mut REMAINING_FILES: once_cell::sync::Lazy<Arc<Mutex<isize>>> =
     once_cell::sync::Lazy::new(|| {
         #[cfg(target_os = "android")]
@@ -94,35 +96,69 @@ macro_rules! to_str {
     };
 }
 
+fn boot_time() -> u64 {
+    if let Ok(f) = File::open("/proc/stat") {
+        let buf = BufReader::new(f);
+        let line = buf
+            .split(b'\n')
+            .filter_map(|r| r.ok())
+            .find(|l| l.starts_with(b"btime"));
+
+        if let Some(line) = line {
+            return line
+                .split(|x| *x == b' ')
+                .filter(|s| !s.is_empty())
+                .nth(1)
+                .map(|v| to_u64(v))
+                .unwrap_or(0);
+        }
+    }
+    // Either we didn't find "btime" or "/proc/stat" wasn't available for some reason...
+    let mut up = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut up) } == 0 {
+        up.tv_sec as u64
+    } else {
+        sysinfo_debug!("clock_gettime failed: boot time cannot be retrieve...");
+        0
+    }
+}
+
 /// Structs containing system's information.
-#[derive(Debug)]
 pub struct System {
     process_list: Process,
     mem_total: u64,
     mem_free: u64,
+    mem_buffers: u64,
+    mem_page_cache: u64,
+    mem_slab_reclaimable: u64,
     swap_total: u64,
     swap_free: u64,
+    global_processor: Processor,
     processors: Vec<Processor>,
     page_size_kb: u64,
-    temperatures: Vec<Component>,
+    components: Vec<Component>,
     disks: Vec<Disk>,
-    network: NetworkData,
+    networks: Networks,
     uptime: u64,
+    users: Vec<User>,
+    boot_time: u64,
 }
 
 impl System {
     fn clear_procs(&mut self) {
         if !self.processors.is_empty() {
-            let (new, old) = get_raw_times(&self.processors[0]);
+            let (new, old) = get_raw_times(&self.global_processor);
             let total_time = (if old > new { 1 } else { new - old }) as f32;
             let mut to_delete = Vec::with_capacity(20);
-            let nb_processors = self.processors.len() as u64 - 1;
 
             for (pid, proc_) in &mut self.process_list.tasks {
                 if !has_been_updated(proc_) {
                     to_delete.push(*pid);
                 } else {
-                    compute_cpu_usage(proc_, nb_processors, total_time);
+                    compute_cpu_usage(proc_, self.processors.len() as u64, total_time);
                 }
             }
             for pid in to_delete {
@@ -132,14 +168,46 @@ impl System {
     }
 
     fn refresh_processors(&mut self, limit: Option<u32>) {
-        debug!("Refresh Processors");
         if let Ok(f) = File::open("/proc/stat") {
             let buf = BufReader::new(f);
             let mut i = 0;
             let first = self.processors.is_empty();
             let mut it = buf.split(b'\n');
             let mut count = 0;
+            let frequency = if first { get_cpu_frequency() } else { 0 };
+            let (vendor_id, brand) = if first {
+                get_vendor_id_and_brand()
+            } else {
+                (String::new(), String::new())
+            };
 
+            if let Some(Ok(line)) = it.next() {
+                if &line[..3] != b"cpu" {
+                    return;
+                }
+                count += 1;
+                let mut parts = line.split(|x| *x == b' ').filter(|s| !s.is_empty());
+                if first {
+                    self.global_processor.name = to_str!(parts.next().unwrap_or(&[])).to_owned();
+                }
+                self.global_processor.set(
+                    parts.next().map(|v| to_u64(v)).unwrap_or(0),
+                    parts.next().map(|v| to_u64(v)).unwrap_or(0),
+                    parts.next().map(|v| to_u64(v)).unwrap_or(0),
+                    parts.next().map(|v| to_u64(v)).unwrap_or(0),
+                    parts.next().map(|v| to_u64(v)).unwrap_or(0),
+                    parts.next().map(|v| to_u64(v)).unwrap_or(0),
+                    parts.next().map(|v| to_u64(v)).unwrap_or(0),
+                    parts.next().map(|v| to_u64(v)).unwrap_or(0),
+                    parts.next().map(|v| to_u64(v)).unwrap_or(0),
+                    parts.next().map(|v| to_u64(v)).unwrap_or(0),
+                );
+                if let Some(limit) = limit {
+                    if count >= limit {
+                        return;
+                    }
+                }
+            }
             while let Some(Ok(line)) = it.next() {
                 if &line[..3] != b"cpu" {
                     break;
@@ -148,7 +216,7 @@ impl System {
                 count += 1;
                 let mut parts = line.split(|x| *x == b' ').filter(|s| !s.is_empty());
                 if first {
-                    self.processors.push(new_processor(
+                    self.processors.push(Processor::new_with_values(
                         to_str!(parts.next().unwrap_or(&[])),
                         parts.next().map(|v| to_u64(v)).unwrap_or(0),
                         parts.next().map(|v| to_u64(v)).unwrap_or(0),
@@ -160,11 +228,13 @@ impl System {
                         parts.next().map(|v| to_u64(v)).unwrap_or(0),
                         parts.next().map(|v| to_u64(v)).unwrap_or(0),
                         parts.next().map(|v| to_u64(v)).unwrap_or(0),
+                        frequency,
+                        vendor_id.clone(),
+                        brand.clone(),
                     ));
                 } else {
                     parts.next(); // we don't want the name again
-                    set_processor(
-                        &mut self.processors[i],
+                    self.processors[i].set(
                         parts.next().map(|v| to_u64(v)).unwrap_or(0),
                         parts.next().map(|v| to_u64(v)).unwrap_or(0),
                         parts.next().map(|v| to_u64(v)).unwrap_or(0),
@@ -184,6 +254,10 @@ impl System {
                     }
                 }
             }
+            if first {
+                self.global_processor.vendor_id = vendor_id;
+                self.global_processor.brand = brand;
+            }
         }
     }
 }
@@ -194,27 +268,57 @@ impl SystemExt for System {
             process_list: Process::new(0, None, 0),
             mem_total: 0,
             mem_free: 0,
+            mem_buffers: 0,
+            mem_page_cache: 0,
+            mem_slab_reclaimable: 0,
             swap_total: 0,
             swap_free: 0,
+            global_processor: Processor::new_with_values(
+                "",
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                String::new(),
+                String::new(),
+            ),
             processors: Vec::with_capacity(4),
             page_size_kb: unsafe { sysconf(_SC_PAGESIZE) as u64 / 1024 },
-            temperatures: component::get_components(),
+            components: Vec::new(),
             disks: Vec::with_capacity(2),
-            network: network::new(),
+            networks: Networks::new(),
             uptime: get_uptime(),
+            users: Vec::new(),
+            boot_time: boot_time(),
         };
+        if !refreshes.cpu() {
+            s.refresh_processors(None); // We need the processors to be filled.
+        }
         s.refresh_specifics(refreshes);
         s
     }
 
+    fn refresh_components_list(&mut self) {
+        self.components = component::get_components();
+    }
+
     fn refresh_memory(&mut self) {
-        debug!("Refresh Memory");
         self.uptime = get_uptime();
         if let Ok(data) = get_all_data("/proc/meminfo", 16_385) {
             for line in data.split('\n') {
                 let field = match line.split(':').next() {
                     Some("MemTotal") => &mut self.mem_total,
-                    Some("MemAvailable") | Some("MemFree") => &mut self.mem_free,
+                    Some("MemFree") => &mut self.mem_free,
+                    Some("Buffers") => &mut self.mem_buffers,
+                    Some("Cached") => &mut self.mem_page_cache,
+                    Some("SReclaimable") => &mut self.mem_slab_reclaimable,
                     Some("SwapTotal") => &mut self.swap_total,
                     Some("SwapFree") => &mut self.swap_free,
                     _ => continue,
@@ -229,20 +333,11 @@ impl SystemExt for System {
     }
 
     fn refresh_cpu(&mut self) {
-        debug!("Refresh CPU");
         self.uptime = get_uptime();
         self.refresh_processors(None);
     }
 
-    fn refresh_temperatures(&mut self) {
-        debug!("Refresh Temperature");
-        for component in &mut self.temperatures {
-            component.update();
-        }
-    }
-
     fn refresh_processes(&mut self) {
-        debug!("Refresh Processes");
         self.uptime = get_uptime();
         if refresh_procs(
             &mut self.process_list,
@@ -275,39 +370,29 @@ impl SystemExt for System {
         };
         if found && !self.processors.is_empty() {
             self.refresh_processors(Some(1));
-            let (new, old) = get_raw_times(&self.processors[0]);
+            let (new, old) = get_raw_times(&self.global_processor);
             let total_time = (if old > new { 1 } else { new - old }) as f32;
-            let nb_processors = self.processors.len() as u64 - 1;
 
             if let Some(p) = self.process_list.tasks.get_mut(&pid) {
-                compute_cpu_usage(p, nb_processors, total_time);
+                compute_cpu_usage(p, self.processors.len() as u64, total_time);
             }
         }
         found
     }
 
-    fn refresh_disks(&mut self) {
-        debug!("Refresh Disks");
-        for disk in &mut self.disks {
-            disk.update();
-        }
+    fn refresh_disks_list(&mut self) {
+        self.disks = disk::get_all_disks();
     }
 
-    fn refresh_disk_list(&mut self) {
-        debug!("Refresh Disk List");
-        self.disks = get_all_disks();
-    }
-
-    fn refresh_network(&mut self) {
-        debug!("Refresh Network");
-        network::update_network(&mut self.network);
+    fn refresh_users_list(&mut self) {
+        self.users = crate::linux::users::get_users_list();
     }
 
     // COMMON PART
     //
     // Need to be moved into a "common" file to avoid duplication.
 
-    fn get_process_list(&self) -> &HashMap<Pid, Process> {
+    fn get_processes(&self) -> &HashMap<Pid, Process> {
         &self.process_list.tasks
     }
 
@@ -315,12 +400,20 @@ impl SystemExt for System {
         self.process_list.tasks.get(&pid)
     }
 
-    fn get_network(&self) -> &NetworkData {
-        &self.network
+    fn get_networks(&self) -> &Networks {
+        &self.networks
     }
 
-    fn get_processor_list(&self) -> &[Processor] {
-        &self.processors[..]
+    fn get_networks_mut(&mut self) -> &mut Networks {
+        &mut self.networks
+    }
+
+    fn get_global_processor_info(&self) -> &Processor {
+        &self.global_processor
+    }
+
+    fn get_processors(&self) -> &[Processor] {
+        &self.processors
     }
 
     fn get_total_memory(&self) -> u64 {
@@ -332,7 +425,7 @@ impl SystemExt for System {
     }
 
     fn get_used_memory(&self) -> u64 {
-        self.mem_total - self.mem_free
+        self.mem_total - self.mem_free - self.mem_buffers - self.mem_page_cache - self.mem_slab_reclaimable
     }
 
     fn get_total_swap(&self) -> u64 {
@@ -348,16 +441,53 @@ impl SystemExt for System {
         self.swap_total - self.swap_free
     }
 
-    fn get_components_list(&self) -> &[Component] {
-        &self.temperatures[..]
+    fn get_components(&self) -> &[Component] {
+        &self.components
+    }
+
+    fn get_components_mut(&mut self) -> &mut [Component] {
+        &mut self.components
     }
 
     fn get_disks(&self) -> &[Disk] {
-        &self.disks[..]
+        &self.disks
+    }
+
+    fn get_disks_mut(&mut self) -> &mut [Disk] {
+        &mut self.disks
     }
 
     fn get_uptime(&self) -> u64 {
         self.uptime
+    }
+
+    fn get_boot_time(&self) -> u64 {
+        self.boot_time
+    }
+
+    fn get_load_average(&self) -> LoadAvg {
+        let mut s = String::new();
+        if File::open("/proc/loadavg")
+            .and_then(|mut f| f.read_to_string(&mut s))
+            .is_err()
+        {
+            return LoadAvg::default();
+        }
+        let loads = s
+            .trim()
+            .split(' ')
+            .take(3)
+            .map(|val| val.parse::<f64>().unwrap())
+            .collect::<Vec<f64>>();
+        LoadAvg {
+            one: loads[0],
+            five: loads[1],
+            fifteen: loads[2],
+        }
+    }
+
+    fn get_users(&self) -> &[User] {
+        &self.users
     }
 }
 
@@ -568,7 +698,7 @@ fn check_nb_open_files(f: File) -> Option<File> {
         }
     }
     // Something bad happened...
-    return None;
+    None
 }
 
 fn _get_process_data(
@@ -579,16 +709,16 @@ fn _get_process_data(
     uptime: u64,
     now: u64,
 ) -> Result<Option<Process>, ()> {
-    debug!("Get PID: {}:{}", pid, proc_list.pid);
     let nb = match path.file_name().and_then(|x| x.to_str()).map(Pid::from_str) {
         Some(Ok(nb)) if nb != pid => nb,
         _ => return Err(()),
     };
+
     let get_status = |p: &mut Process, part: &str| {
         p.status = part
             .chars()
             .next()
-            .and_then(|c| Some(ProcessStatus::from(c)))
+            .map(ProcessStatus::from)
             .unwrap_or_else(|| ProcessStatus::Unknown(0));
     };
     let parent_memory = proc_list.memory;
@@ -617,7 +747,7 @@ fn _get_process_data(
             uptime,
             now,
         );
-        update_process_disk_activity(entry);
+        update_process_disk_activity(entry, path);
         return Ok(None);
     }
 
@@ -699,25 +829,8 @@ fn _get_process_data(
         uptime,
         now,
     );
-    update_process_disk_activity(&mut p);
+    update_process_disk_activity(&mut p, path);
     Ok(Some(p))
-}
-
-fn update_process_disk_activity(p: &mut Process){
-    let path = PathBuf::from(format!("/proc/{}/io", p.pid));
-    let data = match get_all_data(&path, 16_384){
-        Ok(d) => d,
-        Err(_) => return
-    };
-    let data: Vec<Vec<&str>> = data.split("\n").map(|l| l.split(": ").collect()).collect();
-    for d in data.iter(){
-        if d[0] == "read_bytes"{
-            p.read_bytes = d[1].parse::<u64>().unwrap_or(0);
-        }
-        else if d[0] == "write_bytes"{
-            p.write_bytes = d[1].parse::<u64>().unwrap_or(0);
-        }
-    }
 }
 
 fn copy_from_file(entry: &Path) -> Vec<String> {
@@ -731,7 +844,7 @@ fn copy_from_file(entry: &Path) -> Vec<String> {
                 let mut start = 0;
                 for (pos, x) in data.iter().enumerate() {
                     if *x == 0 {
-                        if pos - start > 1 {
+                        if pos - start >= 1 {
                             if let Ok(s) = ::std::str::from_utf8(&data[start..pos])
                                 .map(|x| x.trim().to_owned())
                             {
@@ -763,24 +876,6 @@ pub fn get_all_data<P: AsRef<Path>>(file_path: P, size: usize) -> io::Result<Str
     get_all_data_from_file(&mut file, size)
 }
 
-fn get_all_disks() -> Vec<Disk> {
-    let content = get_all_data("/proc/mounts", 16_385).unwrap_or_default();
-    let disks = content.lines();
-    let mut ret = vec![];
-
-    for line in disks {
-        let mut split = line.split(' ');
-        if let (Some(name), Some(mountpt), Some(fs)) = (split.next(), split.next(), split.next()) {
-            ret.push(disk::new(
-                name.as_ref(),
-                Path::new(mountpt),
-                fs.as_bytes(),
-            ));
-        }
-    }
-    ret
-}
-
 fn get_uptime() -> u64 {
     let content = get_all_data("/proc/uptime", 50).unwrap_or_default();
     u64::from_str_radix(content.split('.').next().unwrap_or_else(|| "0"), 10).unwrap_or_else(|_| 0)
@@ -789,6 +884,6 @@ fn get_uptime() -> u64 {
 fn get_secs_since_epoch() -> u64 {
     match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
         Ok(n) => n.as_secs(),
-        Err(_) => panic!("SystemTime before UNIX EPOCH!"),
+        _ => panic!("SystemTime before UNIX EPOCH!"),
     }
 }

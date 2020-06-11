@@ -6,13 +6,14 @@
 
 use std::borrow::Borrow;
 use std::ffi::OsStr;
-use std::fmt::{self, Debug, Formatter};
-use std::mem;
+use std::fmt;
+use std::mem::{self, MaybeUninit};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use libc::{c_int, c_void, gid_t, kill, size_t, uid_t};
 
+use DiskUsage;
 use Pid;
 use ProcessExt;
 
@@ -157,16 +158,14 @@ pub struct Process {
     pub threads_running: u64,
     pub priority: i32,
     pub nice: i32,
-    pub read_bytes: u64,
-    pub write_bytes: u64
+    pub(crate) old_read_bytes: u64,
+    pub(crate) old_written_bytes: u64,
+    pub(crate) read_bytes: u64,
+    pub(crate) written_bytes: u64,
 }
 
 impl Process {
-    pub(crate) fn new_empty(
-        pid: Pid,
-        exe: PathBuf,
-        name: String,
-    ) -> Process {
+    pub(crate) fn new_empty(pid: Pid, exe: PathBuf, name: String) -> Process {
         Process {
             name,
             pid,
@@ -189,6 +188,10 @@ impl Process {
             gid: 0,
             process_status: ProcessStatus::Unknown(0),
             status: None,
+            old_read_bytes: 0,
+            old_written_bytes: 0,
+            read_bytes: 0,
+            written_bytes: 0,
             faults: 0,
             pageins: 0,
             messages_sent: 0,
@@ -197,8 +200,6 @@ impl Process {
             threads_running: 0,
             priority: 0,
             nice: 0,
-            read_bytes: 0,
-            write_bytes: 0
         }
     }
 
@@ -234,6 +235,10 @@ impl Process {
             gid: 0,
             process_status: ProcessStatus::Unknown(0),
             status: None,
+            old_read_bytes: 0,
+            old_written_bytes: 0,
+            read_bytes: 0,
+            written_bytes: 0,
             faults: 0,
             pageins: 0,
             messages_sent: 0,
@@ -242,8 +247,6 @@ impl Process {
             threads_running: 0,
             priority: 0,
             nice: 0,
-            read_bytes: 0,
-            write_bytes: 0
         }
     }
 }
@@ -272,6 +275,10 @@ impl ProcessExt for Process {
             gid: 0,
             process_status: ProcessStatus::Unknown(0),
             status: None,
+            old_read_bytes: 0,
+            old_written_bytes: 0,
+            read_bytes: 0,
+            written_bytes: 0,
             faults: 0,
             pageins: 0,
             messages_sent: 0,
@@ -280,8 +287,6 @@ impl ProcessExt for Process {
             threads_running: 0,
             priority: 0,
             nice: 0,
-            read_bytes: 0,
-            write_bytes: 0
         }
     }
 
@@ -340,39 +345,14 @@ impl ProcessExt for Process {
     fn cpu_usage(&self) -> f32 {
         self.cpu_usage
     }
-}
 
-#[allow(unused_must_use)]
-impl Debug for Process {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        writeln!(f, "pid: {}", self.pid);
-        writeln!(f, "parent: {:?}", self.parent);
-        writeln!(f, "name: {}", self.name);
-        writeln!(f, "environment:");
-        for var in &self.environ {
-            if !var.is_empty() {
-                writeln!(f, "\t{}", var);
-            }
+    fn disk_usage(&self) -> DiskUsage {
+        DiskUsage {
+            read_bytes: self.read_bytes - self.old_read_bytes,
+            total_read_bytes: self.read_bytes,
+            written_bytes: self.written_bytes - self.old_written_bytes,
+            total_written_bytes: self.written_bytes,
         }
-        writeln!(f, "command:");
-        for arg in &self.cmd {
-            writeln!(f, "\t{}", arg);
-        }
-        writeln!(f, "executable path: {:?}", self.exe);
-        writeln!(f, "current working directory: {:?}", self.cwd);
-        writeln!(f, "owner/group: {}:{}", self.uid, self.gid);
-        writeln!(f, "memory usage: {} KiB", self.memory);
-        writeln!(f, "virtual memory usage: {} KiB", self.virtual_memory);
-        writeln!(f, "cpu usage: {}%", self.cpu_usage);
-        writeln!(
-            f,
-            "status: {}",
-            match self.status {
-                Some(ref v) => v.to_string(),
-                None => "Unknown",
-            }
-        );
-        write!(f, "root path: {:?}", self.root)
     }
 }
 
@@ -485,8 +465,6 @@ pub(crate) fn update_process(
             let time = ffi::mach_absolute_time();
             compute_cpu_usage(p, time, task_time);
 
-            p.memory = task_info.pti_resident_size >> 10; // divide by 1024
-            p.virtual_memory = task_info.pti_virtual_size >> 10; // divide by 1024
             p.faults = all_task_info.ptinfo.pti_faults as u64;
             p.pageins = all_task_info.ptinfo.pti_pageins as u64;
             p.messages_sent = all_task_info.ptinfo.pti_messages_sent as u64;
@@ -496,6 +474,9 @@ pub(crate) fn update_process(
             p.threads_total = all_task_info.ptinfo.pti_threadnum as u64;
             p.priority = all_task_info.ptinfo.pti_priority;
             p.nice = all_task_info.pbsd.pbi_nice;
+            update_proc_disk_activity(p);
+            p.memory = task_info.pti_resident_size / 1_000;
+            p.virtual_memory = task_info.pti_virtual_size / 1_000;
             update_proc_disk_activity(p);
             return Ok(None);
         }
@@ -510,7 +491,11 @@ pub(crate) fn update_process(
         ) != mem::size_of::<libc::proc_bsdinfo>() as _
         {
             let mut buffer: Vec<u8> = Vec::with_capacity(ffi::PROC_PIDPATHINFO_MAXSIZE as _);
-            match ffi::proc_pidpath(pid, buffer.as_mut_ptr() as *mut _, ffi::PROC_PIDPATHINFO_MAXSIZE) {
+            match ffi::proc_pidpath(
+                pid,
+                buffer.as_mut_ptr() as *mut _,
+                ffi::PROC_PIDPATHINFO_MAXSIZE,
+            ) {
                 x if x > 0 => {
                     buffer.set_len(x as _);
                     let tmp = String::from_utf8_unchecked(buffer);
@@ -675,8 +660,8 @@ pub(crate) fn update_process(
 
         let task_info = get_task_info(pid);
 
-        p.memory = task_info.pti_resident_size >> 10; // divide by 1024
-        p.virtual_memory = task_info.pti_virtual_size >> 10; // divide by 1024
+        p.memory = task_info.pti_resident_size / 1_000;
+        p.virtual_memory = task_info.pti_virtual_size / 1_000;
 
         let all_task_info = get_task_all_info(pid);
         // https://fergofrog.com/code/cbowser/xnu/osfmk/kern/bsd_kern.c.html
@@ -698,20 +683,19 @@ pub(crate) fn update_process(
     }
 }
 
-fn update_proc_disk_activity(p: &mut Process){
-    let mut pidrusage = ffi::RUsageInfoV2::default();
-    let ptr = &mut pidrusage as *mut _ as *mut c_void;
-    let retval: i32;
-    unsafe{
-        retval = ffi::proc_pid_rusage(p.pid() as c_int, 2, ptr);
-    }
+fn update_proc_disk_activity(p: &mut Process) {
+    p.old_read_bytes = p.read_bytes;
+    p.old_written_bytes = p.written_bytes;
 
-    if retval < 0{
-        panic!("proc_pid_rusage failed: {:?}", retval);
-    }
-    else{
+    let mut pidrusage: ffi::RUsageInfoV2 = unsafe { MaybeUninit::uninit().assume_init() };
+    let retval =
+        unsafe { ffi::proc_pid_rusage(p.pid() as c_int, 2, &mut pidrusage as *mut _ as _) };
+
+    if retval < 0 {
+        sysinfo_debug!("proc_pid_rusage failed: {:?}", retval);
+    } else {
         p.read_bytes = pidrusage.ri_diskio_bytesread;
-        p.write_bytes = pidrusage.ri_diskio_byteswritten;
+        p.written_bytes = pidrusage.ri_diskio_byteswritten;
     }
 }
 
