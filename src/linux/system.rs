@@ -836,7 +836,6 @@ fn _get_process_data(
         tmp.pop();
         tmp.push("cmdline");
         p.cmd = copy_from_file(&tmp);
-        //p.name = parts[1].to_string().replace("(", "");
         tmp.pop();
         tmp.push("exe");
         match tmp.read_link() {
@@ -855,6 +854,7 @@ fn _get_process_data(
                 p.name = get_exe_name(&p);
             }
         }
+        p.name = parts[1].to_string().replace("(", "");
         tmp.pop();
         tmp.push("environ");
         p.environ = copy_from_file(&tmp);
