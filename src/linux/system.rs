@@ -19,7 +19,7 @@ use {ProcessExt, RefreshKind, SystemExt};
 use libc::{self, gid_t, sysconf, uid_t, _SC_CLK_TCK, _SC_PAGESIZE};
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
-use std::fs::{self, read_link, File};
+use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -131,6 +131,7 @@ pub struct System {
     process_list: Process,
     mem_total: u64,
     mem_free: u64,
+    mem_available: u64,
     mem_buffers: u64,
     mem_page_cache: u64,
     mem_slab_reclaimable: u64,
@@ -170,11 +171,10 @@ impl System {
     fn refresh_processors(&mut self, limit: Option<u32>) {
         if let Ok(f) = File::open("/proc/stat") {
             let buf = BufReader::new(f);
-            let mut i = 0;
+            let mut i: usize = 0;
             let first = self.processors.is_empty();
             let mut it = buf.split(b'\n');
             let mut count = 0;
-            let frequency = if first { get_cpu_frequency() } else { 0 };
             let (vendor_id, brand) = if first {
                 get_vendor_id_and_brand()
             } else {
@@ -182,13 +182,14 @@ impl System {
             };
 
             if let Some(Ok(line)) = it.next() {
-                if &line[..3] != b"cpu" {
+                if &line[..4] != b"cpu " {
                     return;
                 }
-                count += 1;
                 let mut parts = line.split(|x| *x == b' ').filter(|s| !s.is_empty());
                 if first {
                     self.global_processor.name = to_str!(parts.next().unwrap_or(&[])).to_owned();
+                } else {
+                    parts.next();
                 }
                 self.global_processor.set(
                     parts.next().map(|v| to_u64(v)).unwrap_or(0),
@@ -202,6 +203,7 @@ impl System {
                     parts.next().map(|v| to_u64(v)).unwrap_or(0),
                     parts.next().map(|v| to_u64(v)).unwrap_or(0),
                 );
+                count += 1;
                 if let Some(limit) = limit {
                     if count >= limit {
                         return;
@@ -213,7 +215,6 @@ impl System {
                     break;
                 }
 
-                count += 1;
                 let mut parts = line.split(|x| *x == b' ').filter(|s| !s.is_empty());
                 if first {
                     self.processors.push(Processor::new_with_values(
@@ -228,10 +229,11 @@ impl System {
                         parts.next().map(|v| to_u64(v)).unwrap_or(0),
                         parts.next().map(|v| to_u64(v)).unwrap_or(0),
                         parts.next().map(|v| to_u64(v)).unwrap_or(0),
-                        frequency,
+                        get_cpu_frequency(i),
                         vendor_id.clone(),
                         brand.clone(),
                     ));
+                    i += 1;
                 } else {
                     parts.next(); // we don't want the name again
                     self.processors[i].set(
@@ -246,8 +248,10 @@ impl System {
                         parts.next().map(|v| to_u64(v)).unwrap_or(0),
                         parts.next().map(|v| to_u64(v)).unwrap_or(0),
                     );
+                    self.processors[i].frequency = get_cpu_frequency(i);
                     i += 1;
                 }
+                count += 1;
                 if let Some(limit) = limit {
                     if count >= limit {
                         break;
@@ -268,6 +272,7 @@ impl SystemExt for System {
             process_list: Process::new(0, None, 0),
             mem_total: 0,
             mem_free: 0,
+            mem_available: 0,
             mem_buffers: 0,
             mem_page_cache: 0,
             mem_slab_reclaimable: 0,
@@ -316,6 +321,7 @@ impl SystemExt for System {
                 let field = match line.split(':').next() {
                     Some("MemTotal") => &mut self.mem_total,
                     Some("MemFree") => &mut self.mem_free,
+                    Some("MemAvailable") => &mut self.mem_available,
                     Some("Buffers") => &mut self.mem_buffers,
                     Some("Cached") => &mut self.mem_page_cache,
                     Some("SReclaimable") => &mut self.mem_slab_reclaimable,
@@ -341,7 +347,7 @@ impl SystemExt for System {
         self.uptime = get_uptime();
         if refresh_procs(
             &mut self.process_list,
-            "/proc",
+            Path::new("/proc"),
             self.page_size_kb,
             0,
             self.uptime,
@@ -361,8 +367,8 @@ impl SystemExt for System {
             self.uptime,
             get_secs_since_epoch(),
         ) {
-            Ok(Some(p)) => {
-                self.process_list.tasks.insert(p.pid(), p);
+            Ok((Some(p), pid)) => {
+                self.process_list.tasks.insert(pid, p);
                 false
             }
             Ok(_) => true,
@@ -424,8 +430,16 @@ impl SystemExt for System {
         self.mem_free
     }
 
+    fn get_available_memory(&self) -> u64 {
+        self.mem_available
+    }
+
     fn get_used_memory(&self) -> u64 {
-        self.mem_total - self.mem_free - self.mem_buffers - self.mem_page_cache - self.mem_slab_reclaimable
+        self.mem_total
+            - self.mem_free
+            - self.mem_buffers
+            - self.mem_page_cache
+            - self.mem_slab_reclaimable
     }
 
     fn get_total_swap(&self) -> u64 {
@@ -518,15 +532,15 @@ impl<'a, T> Wrap<'a, T> {
 unsafe impl<'a, T> Send for Wrap<'a, T> {}
 unsafe impl<'a, T> Sync for Wrap<'a, T> {}
 
-fn refresh_procs<P: AsRef<Path>>(
+fn refresh_procs(
     proc_list: &mut Process,
-    path: P,
+    path: &Path,
     page_size_kb: u64,
     pid: Pid,
     uptime: u64,
     now: u64,
 ) -> bool {
-    if let Ok(d) = fs::read_dir(path.as_ref()) {
+    if let Ok(d) = fs::read_dir(path) {
         let folders = d
             .filter_map(|entry| {
                 if let Ok(entry) = entry {
@@ -547,7 +561,7 @@ fn refresh_procs<P: AsRef<Path>>(
             folders
                 .par_iter()
                 .filter_map(|e| {
-                    if let Ok(p) = _get_process_data(
+                    if let Ok((p, _)) = _get_process_data(
                         e.as_path(),
                         proc_list.get(),
                         page_size_kb,
@@ -562,18 +576,25 @@ fn refresh_procs<P: AsRef<Path>>(
                 })
                 .collect::<Vec<_>>()
         } else {
-            folders
+            let mut updated_pids = Vec::with_capacity(folders.len());
+            let new_tasks = folders
                 .iter()
                 .filter_map(|e| {
-                    if let Ok(p) =
+                    if let Ok((p, pid)) =
                         _get_process_data(e.as_path(), proc_list, page_size_kb, pid, uptime, now)
                     {
+                        updated_pids.push(pid);
                         p
                     } else {
                         None
                     }
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            // Sub-tasks are not cleaned up outside so we do it here directly.
+            proc_list
+                .tasks
+                .retain(|&pid, _| updated_pids.iter().any(|&x| x == pid));
+            new_tasks
         }
         .into_iter()
         .for_each(|e| {
@@ -615,14 +636,7 @@ fn update_time_and_memory(
         entry.priority = i32::from_str(parts[17]).unwrap_or(0);
         entry.nice = i32::from_str(parts[18]).unwrap_or(0);
     }
-    refresh_procs(
-        entry,
-        path.join(Path::new("task")),
-        page_size_kb,
-        pid,
-        uptime,
-        now,
-    );
+    refresh_procs(entry, &path.join("task"), page_size_kb, pid, uptime, now);
 }
 
 macro_rules! unwrap_or_return {
@@ -701,6 +715,26 @@ fn check_nb_open_files(f: File) -> Option<File> {
     None
 }
 
+fn get_exe_name(p: &Process) -> String {
+    p.cmd
+        .get(0)
+        .map(|x| {
+            let cmd = x.split('\0').next().unwrap_or_else(|| "");
+            if cmd.starts_with('/') {
+                // If this is an absolute path, it means we were able to get the path through
+                // /proc/[PID]/exe
+                cmd.split('/')
+                    .last()
+                    .map(|x| x.to_owned())
+                    .unwrap_or_else(String::new)
+            } else {
+                // Apparently we couldn't get the path so we can assume this is the full name...
+                cmd.to_owned()
+            }
+        })
+        .unwrap_or_else(String::new)
+}
+
 fn _get_process_data(
     path: &Path,
     proc_list: &mut Process,
@@ -708,7 +742,7 @@ fn _get_process_data(
     pid: Pid,
     uptime: u64,
     now: u64,
-) -> Result<Option<Process>, ()> {
+) -> Result<(Option<Process>, Pid), ()> {
     let nb = match path.file_name().and_then(|x| x.to_str()).map(Pid::from_str) {
         Some(Ok(nb)) if nb != pid => nb,
         _ => return Err(()),
@@ -729,7 +763,7 @@ fn _get_process_data(
         } else {
             let mut tmp = PathBuf::from(path);
             tmp.push("stat");
-            let mut file = ::std::fs::File::open(tmp).map_err(|_| ())?;
+            let mut file = File::open(tmp).map_err(|_| ())?;
             let data = get_all_data_from_file(&mut file, 1024).map_err(|_| ())?;
             entry.stat_file = check_nb_open_files(file);
             data
@@ -748,7 +782,7 @@ fn _get_process_data(
             now,
         );
         update_process_disk_activity(entry, path);
-        return Ok(None);
+        return Ok((None, nb));
     }
 
     let mut tmp = PathBuf::from(path);
@@ -802,14 +836,28 @@ fn _get_process_data(
         tmp.pop();
         tmp.push("cmdline");
         p.cmd = copy_from_file(&tmp);
-        p.name = parts[1].to_string().replace("(", "");
+        //p.name = parts[1].to_string().replace("(", "");
+        tmp.pop();
+        tmp.push("exe");
+        match tmp.read_link() {
+            Ok(exe_path) => {
+                p.name = exe_path
+                    .file_name()
+                    .and_then(|s| {
+                        let s: &str = s.to_str()?;
+                        Some(s.to_owned())
+                    })
+                    .unwrap_or_else(|| get_exe_name(&p));
+                p.exe = exe_path;
+            }
+            Err(_) => {
+                p.exe = PathBuf::new();
+                p.name = get_exe_name(&p);
+            }
+        }
         tmp.pop();
         tmp.push("environ");
         p.environ = copy_from_file(&tmp);
-        tmp.pop();
-        tmp.push("exe");
-        p.exe = read_link(tmp.to_str().unwrap_or_else(|| "")).unwrap_or_else(|_| PathBuf::new());
-
         tmp.pop();
         tmp.push("cwd");
         p.cwd = realpath(&tmp);
@@ -830,7 +878,7 @@ fn _get_process_data(
         now,
     );
     update_process_disk_activity(&mut p, path);
-    Ok(Some(p))
+    Ok((Some(p), nb))
 }
 
 fn copy_from_file(entry: &Path) -> Vec<String> {

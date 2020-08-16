@@ -16,13 +16,14 @@ Supports the following platforms:
  * Raspberry Pi
  * Android
  * macOS
+ * iOS
  * Windows
 
 It also compiles for Android but never been tested on it.
 
 ### Running on Raspberry Pi
 
-It'll be difficult to build on Raspberry Pi. A good way-around is to be build on Linux before sending it to your Raspberry Pi.
+It'll be difficult to build on Raspberry Pi. A good way-around is to cross-build, then send the executable to your Raspberry Pi.
 
 First install the arm toolchain, for example on Ubuntu: `sudo apt-get install gcc-multilib-arm-linux-gnueabihf`.
 
@@ -72,10 +73,10 @@ for component in sys.get_components() {
 }
 
 // Memory information:
-println!("total memory: {} KiB", sys.get_total_memory());
-println!("used memory : {} KiB", sys.get_used_memory());
-println!("total swap  : {} KiB", sys.get_total_swap());
-println!("used swap   : {} KiB", sys.get_used_swap());
+println!("total memory: {} KB", sys.get_total_memory());
+println!("used memory : {} KB", sys.get_used_memory());
+println!("total swap  : {} KB", sys.get_total_swap());
+println!("used swap   : {} KB", sys.get_used_swap());
 
 // Number of processors
 println!("NB processors: {}", sys.get_processors().len());

@@ -104,19 +104,14 @@ impl CpuValues {
 
     /// Returns work time.
     pub fn work_time(&self) -> u64 {
-        self.user + self.nice + self.system
+        self.user + self.nice + self.system + self.irq + self.softirq + self.steal
     }
 
     /// Returns total time.
     pub fn total_time(&self) -> u64 {
-        self.work_time()
-            + self.idle
-            + self.iowait
-            + self.irq
-            + self.softirq
-            + self.steal
-            + self.guest
-            + self.guest_nice
+        // `guest` is already included in `user`
+        // `guest_nice` is already included in `nice`
+        self.work_time() + self.idle + self.iowait
     }
 }
 
@@ -128,7 +123,7 @@ pub struct Processor {
     cpu_usage: f32,
     total_time: u64,
     old_total_time: u64,
-    frequency: u64,
+    pub(crate) frequency: u64,
     pub(crate) vendor_id: String,
     pub(crate) brand: String,
 }
@@ -178,25 +173,27 @@ impl Processor {
         guest: u64,
         guest_nice: u64,
     ) {
-        fn min(a: u64, b: u64) -> f32 {
-            use std::cmp::Ordering;
-            (match a.cmp(&b) {
-                Ordering::Equal => 1,
-                Ordering::Greater => a - b,
-                Ordering::Less => b - a,
-            }) as f32
+        macro_rules! min {
+            ($a:expr, $b:expr) => {
+                if $a > $b {
+                    ($a - $b) as f32
+                } else {
+                    1.
+                }
+            };
         }
-        //if !self.new_values.is_zero() {
         self.old_values = self.new_values;
-        //}
         self.new_values.set(
             user, nice, system, idle, iowait, irq, softirq, steal, guest, guest_nice,
         );
-        self.cpu_usage = min(self.new_values.work_time(), self.old_values.work_time())
-            / min(self.new_values.total_time(), self.old_values.total_time())
-            * 100.;
-        self.old_total_time = self.old_values.total_time();
         self.total_time = self.new_values.total_time();
+        self.old_total_time = self.old_values.total_time();
+        self.cpu_usage = min!(self.new_values.work_time(), self.old_values.work_time())
+            / min!(self.total_time, self.old_total_time)
+            * 100.;
+        if self.cpu_usage > 100. {
+            self.cpu_usage = 100.; // to prevent the pourcentage to go above 100%
+        }
     }
 }
 
@@ -224,26 +221,38 @@ impl ProcessorExt for Processor {
 }
 
 pub fn get_raw_times(p: &Processor) -> (u64, u64) {
-    (p.new_values.total_time(), p.old_values.total_time())
+    (p.total_time, p.old_total_time)
 }
 
-pub fn get_cpu_frequency() -> u64 {
-    // /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_cur_freq
+pub fn get_cpu_frequency(cpu_core_index: usize) -> u64 {
     let mut s = String::new();
+    if File::open(format!(
+        "/sys/devices/system/cpu/cpu{}/cpufreq/scaling_cur_freq",
+        cpu_core_index
+    ))
+    .and_then(|mut f| f.read_to_string(&mut s))
+    .is_ok()
+    {
+        let freq_option = s.trim().split('\n').next();
+        if let Some(freq_string) = freq_option {
+            if let Ok(freq) = freq_string.parse::<u64>() {
+                return freq / 1000;
+            }
+        }
+    }
+    s.clear();
     if File::open("/proc/cpuinfo")
         .and_then(|mut f| f.read_to_string(&mut s))
         .is_err()
     {
         return 0;
     }
-
     let find_cpu_mhz = s.split('\n').find(|line| {
         line.starts_with("cpu MHz\t")
             || line.starts_with("BogoMIPS")
             || line.starts_with("clock\t")
             || line.starts_with("bogomips per cpu")
     });
-
     find_cpu_mhz
         .and_then(|line| line.split(':').last())
         .and_then(|val| val.replace("MHz", "").trim().parse::<f64>().ok())

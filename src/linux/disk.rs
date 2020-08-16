@@ -114,7 +114,9 @@ fn find_type_for_name(name: &OsStr) -> DiskType {
     let mut real_path = real_path.to_str().unwrap_or_default();
     if name_path.starts_with("/dev/mapper/") {
         // Recursively solve, for example /dev/dm-0
-        return find_type_for_name(OsStr::new(&real_path));
+        if real_path != name_path {
+            return find_type_for_name(OsStr::new(&real_path));
+        }
     } else if name_path.starts_with("/dev/sd") {
         // Turn "sda1" into "sda"
         real_path = real_path.trim_start_matches("/dev/");
@@ -126,7 +128,9 @@ fn find_type_for_name(name: &OsStr) -> DiskType {
         real_path = real_path.trim_end_matches(|c| c == 'p');
     } else if name_path.starts_with("/dev/root") {
         // Recursively solve, for example /dev/mmcblk0p1
-        return find_type_for_name(OsStr::new(&real_path));
+        if real_path != name_path {
+            return find_type_for_name(OsStr::new(&real_path));
+        }
     } else if name_path.starts_with("/dev/mmcblk") {
         // Turn "mmcblk0p1" into "mmcblk0"
         real_path = real_path.trim_start_matches("/dev/");
@@ -145,8 +149,21 @@ fn find_type_for_name(name: &OsStr) -> DiskType {
         .join(trimmed)
         .join("queue/rotational");
     // Normally, this file only contains '0' or '1' but just in case, we get 8 bytes...
-    let rotational_int = get_all_data(path, 8).unwrap_or_default().trim().parse();
-    DiskType::from(rotational_int.unwrap_or(-1))
+    match get_all_data(path, 8)
+        .unwrap_or_default()
+        .trim()
+        .parse()
+        .ok()
+    {
+        // The disk is marked as rotational so it's a HDD.
+        Some(1) => DiskType::HDD,
+        // The disk is marked as non-rotational so it's very likely a SSD.
+        Some(0) => DiskType::SSD,
+        // Normally it shouldn't happen but welcome to the wonderful world of IT! :D
+        Some(x) => DiskType::Unknown(x),
+        // The information isn't available...
+        None => DiskType::Unknown(-1),
+    }
 }
 
 fn get_all_disks_inner(content: &str) -> Vec<Disk> {
@@ -169,6 +186,7 @@ fn get_all_disks_inner(content: &str) -> Vec<Disk> {
                 "sysfs" | // pseudo file system for kernel objects
                 "proc" |  // another pseudo file system
                 "tmpfs" |
+                "devtmpfs" |
                 "cgroup" |
                 "cgroup2" |
                 "pstore" | // https://www.kernel.org/doc/Documentation/ABI/testing/pstore

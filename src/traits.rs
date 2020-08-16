@@ -745,6 +745,12 @@ pub trait SystemExt: Sized + Debug + Default {
 
     /// Returns the amount of free RAM in kB.
     ///
+    /// Generally, "free" memory refers to unallocated memory whereas "available" memory refers to
+    /// memory that is available for (re)use.
+    ///
+    /// Side note: Windows doesn't report "free" memory so this method returns the same value
+    /// as [`get_available_memory`](#tymethod.get_available_memory).
+    ///
     /// ```no_run
     /// use sysinfo::{System, SystemExt};
     ///
@@ -752,6 +758,22 @@ pub trait SystemExt: Sized + Debug + Default {
     /// println!("{} kB", s.get_free_memory());
     /// ```
     fn get_free_memory(&self) -> u64;
+
+    /// Returns the amount of available RAM in kB.
+    ///
+    /// Generally, "free" memory refers to unallocated memory whereas "available" memory refers to
+    /// memory that is available for (re)use.
+    ///
+    /// Side note: Windows doesn't report "free" memory so
+    /// [`get_free_memory`](#tymethod.get_free_memory) returns the same value as this method.
+    ///
+    /// ```no_run
+    /// use sysinfo::{System, SystemExt};
+    ///
+    /// let s = System::new_all();
+    /// println!("{} kB", s.get_available_memory());
+    /// ```
+    fn get_available_memory(&self) -> u64;
 
     /// Returns the amound of used RAM in kB.
     ///
