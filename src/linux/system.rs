@@ -559,7 +559,7 @@ fn refresh_procs(
         if pid == 0 {
             let proc_list = Wrap(UnsafeCell::new(proc_list));
             folders
-                .par_iter()
+                .iter()
                 .filter_map(|e| {
                     if let Ok((p, _)) = _get_process_data(
                         e.as_path(),
