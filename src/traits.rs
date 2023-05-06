@@ -318,6 +318,19 @@ pub trait ProcessExt: Debug {
     /// }
     /// ```
     fn disk_usage(&self) -> DiskUsage;
+
+
+    /// Returns the virtual memory usage (in kB).
+    ///
+    /// ```no_run
+    /// use sysinfo::{ProcessExt, System, SystemExt};
+    ///
+    /// let s = System::new();
+    /// if let Some(process) = s.get_process(1337) {
+    ///     println!("{} s", process.cpu_time());
+    /// }
+    /// ```
+    fn cpu_time(&self) -> u64;
 }
 
 /// Contains all the methods of the [`Processor`][crate::Processor] struct.

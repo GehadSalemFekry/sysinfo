@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use libc::{c_int, gid_t, kill, uid_t};
 
@@ -110,8 +111,8 @@ pub struct Process {
     pub(crate) root: PathBuf,
     pub(crate) memory: u64,
     pub(crate) virtual_memory: u64,
-    utime: u64,
-    stime: u64,
+    pub(crate) utime: u64,
+    pub(crate) stime: u64,
     old_utime: u64,
     old_stime: u64,
     start_time: u64,
@@ -248,6 +249,11 @@ impl ProcessExt for Process {
             read_bytes: self.read_bytes - self.old_read_bytes,
             total_read_bytes: self.read_bytes,
         }
+    }
+
+    fn cpu_time(&self) -> u64 {
+        let ticks_per_second = Duration::from_secs(1).as_nanos() as f64 / Duration::from_secs(1).as_secs_f64();
+        self.utime + self.stime / ticks_per_second as u64
     }
 }
 
